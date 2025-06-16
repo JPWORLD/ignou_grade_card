@@ -6,7 +6,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementNotInteractableException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementNotInteractableException, WebDriverException
 from bs4 import BeautifulSoup
 import pandas as pd
 from fpdf import FPDF
@@ -20,10 +20,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 # Streamlit setup
 st.set_page_config(page_title="IGNOU Grade Card Automation", layout="centered")
-st.title("🎓 IGNOU Grade Card % Calculator")
+st.title("🎓 IGNOU Grade Card Live Automation")
 
 # Inputs
-enrollment = st.text_input("Enrollment Number", max_chars=10)  # Removed default value
+enrollment = st.text_input("Enrollment Number", max_chars=10)  # No default value
 gradecard_for = st.selectbox("Gradecard For", [
     ("1", "BCA/MCA/MP/PGDCA etc."),
     ("2", "BDP/BA/B.COM/B.Sc./ASSO Programmes"),
@@ -65,7 +65,9 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.binary_location = "/usr/bin/google-chrome"  # Streamlit Cloud Chrome path
             service = Service(ChromeDriverManager().install())
+            logging.info("Initializing ChromeDriver")
             driver = webdriver.Chrome(service=service, options=chrome_options)
             wait = WebDriverWait(driver, 30)
 
@@ -169,8 +171,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
 
             # Prepare display DataFrame with totals
             df_calc_display = pd.concat([df_calc, pd.DataFrame([totals])], ignore_index=True)
-            # Adjust index to start from 1
-            df_calc_display.index = df_calc_display.index + 1
+            df_calc_display.index = df_calc_display.index + 1  # Start serial number from 1
 
             # Display results with fixed column widths
             st.success("✅ Grade Card Parsed and Calculated!")
@@ -231,6 +232,15 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             st.session_state.processing = False
             break
 
+        except WebDriverException as e:
+            retry_count += 1
+            logging.error("Attempt %d failed due to WebDriver issue: %s", retry_count, str(e))
+            if retry_count > max_retries:
+                st.error(f"⏳ Failed to initialize ChromeDriver after {max_retries + 1} attempts: {str(e)}")
+                st.session_state.processing = False
+            else:
+                st.warning(f"⚠️ Attempt {retry_count} failed. Retrying in 5 seconds...")
+                time.sleep(5)
         except (TimeoutException, NoSuchElementException, ElementNotInteractableException) as e:
             retry_count += 1
             logging.error("Attempt %d failed: %s", retry_count, str(e))

@@ -20,7 +20,6 @@ import atexit
 from datetime import datetime, timedelta
 import threading
 from queue import Queue
-import signal
 
 # Global rate limiting
 MAX_REQUESTS_PER_MINUTE = 10
@@ -145,16 +144,6 @@ def create_temp_file(suffix):
             if attempt == max_retries - 1:
                 raise
             time.sleep(0.1)
-
-# Signal handler for graceful shutdown
-def signal_handler(signum, frame):
-    logging.info("Received shutdown signal")
-    resource_manager.cleanup_all()
-    cleanup_temp_files()
-    exit(0)
-
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
 
 # Streamlit setup
 st.set_page_config(

@@ -263,260 +263,234 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
     max_retries = 2
     retry_count = 0
 
-    try:
-        # Validate enrollment number
-        if not enrollment.isdigit() or len(enrollment) not in [9, 10]:
-            st.error("❌ Enrollment number must be 9 or 10 digits.")
-            st.session_state.processing = False
-            st.stop()
+    while retry_count <= max_retries:
+        try:
+            # Validate enrollment number
+            if not enrollment.isdigit() or len(enrollment) not in [9, 10]:
+                st.error("❌ Enrollment number must be 9 or 10 digits.")
+                st.session_state.processing = False
+                st.stop()
 
-        logging.info(f"Session {st.session_state.session_id} - Starting grade card fetch for enrollment: {enrollment} (Attempt {retry_count + 1}/{max_retries + 1})")
+            logging.info(f"Session {st.session_state.session_id} - Starting grade card fetch for enrollment: {enrollment} (Attempt {retry_count + 1}/{max_retries + 1})")
 
-        # Setup Selenium
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
+            # Setup Selenium
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--window-size=1920,1080")
 
-        # Find Chromium binary
-        binary_path = find_chromium_binary()
-        if not binary_path:
-            raise WebDriverException("No Chromium binary found. Please ensure chromium is installed.")
-        chrome_options.binary_location = binary_path
+            # Find Chromium binary
+            binary_path = find_chromium_binary()
+            if not binary_path:
+                raise WebDriverException("No Chromium binary found. Please ensure chromium is installed.")
+            chrome_options.binary_location = binary_path
 
-        # Use system ChromeDriver if available
-        chromedriver_path = "/usr/bin/chromedriver"
-        if os.path.exists(chromedriver_path):
-            service = Service(chromedriver_path)
-            logging.info(f"Session {st.session_state.session_id} - Using system ChromeDriver at: {chromedriver_path}")
-        else:
-            from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
-            logging.info(f"Session {st.session_state.session_id} - Using webdriver-manager to install ChromeDriver")
-
-        logging.info(f"Session {st.session_state.session_id} - Initializing ChromeDriver")
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        resource_manager.add_driver(st.session_state.session_id, driver)
-        wait = WebDriverWait(driver, 60)  # Increased timeout to 60s
-
-        # Log Chrome and ChromeDriver versions
-        chrome_version = driver.capabilities['browserVersion']
-        chromedriver_version = driver.capabilities['chrome']['chromedriverVersion'].split(' ')[0]
-        logging.info(f"Session {st.session_state.session_id} - Using Chromium version: {chrome_version}, ChromeDriver version: {chromedriver_version}")
-
-        # Navigate to IGNOU grade card page
-        driver.get("https://gradecard.ignou.ac.in/gradecard/")
-        logging.info(f"Session {st.session_state.session_id} - Navigated to IGNOU grade card page")
-
-        # Select grade card type and program
-        Select(wait.until(EC.presence_of_element_located((By.ID, "ddlGradecardfor")))).select_by_value(gradecard_for[0])
-        Select(wait.until(EC.presence_of_element_located((By.ID, "ddlProgram")))).select_by_value(program_code)
-        driver.find_element(By.ID, "txtEnrno").send_keys(enrollment)
-
-        # Click login button
-        btn = wait.until(EC.element_to_be_clickable((By.ID, "btnlogin")))
-        driver.execute_script("arguments[0].click();", btn)
-        logging.info(f"Session {st.session_state.session_id} - Submitted form")
-
-        # Wait for results table or error message
-        wait.until(EC.any_of(
-            EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_gvDetail")),
-            EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_lblMsg"))
-        ))
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        logging.info(f"Session {st.session_state.session_id} - Parsed page source")
-
-        # Check for CAPTCHA
-        if soup.find("div", {"id": "captcha"}) or "captcha" in driver.page_source.lower():
-            st.error("❌ CAPTCHA detected. Please try again later or access the website manually to verify.")
-            with create_temp_file('.html') as tmp_file:
-                tmp_file.write(driver.page_source.encode("utf-8"))
-                logging.info(f"Session {st.session_state.session_id} - Page source saved to: {tmp_file}")
-                st.write(f"Page source saved to: {tmp_file}")
-            st.session_state.processing = False
-            st.stop()
-
-        # Check for error messages
-        error_message = soup.find("span", {"id": "ctl00_ContentPlaceHolder1_lblMsg"})
-        if error_message and error_message.text.strip():
-            st.error(f"❌ IGNOU website error: {error_message.text.strip()}")
-            with create_temp_file('.html') as tmp_file:
-                tmp_file.write(driver.page_source.encode("utf-8"))
-                logging.info(f"Session {st.session_state.session_id} - Page source saved to: {tmp_file}")
-                st.write(f"Page source saved to: {tmp_file}")
-            st.session_state.processing = False
-            st.stop()
-
-        # Extract table
-        table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
-        if not table:
-            with create_temp_file('.html') as tmp_file:
-                tmp_file.write(driver.page_source.encode("utf-8"))
-                logging.error(f"Session {st.session_state.session_id} - Grade card table not found. Page source saved to: {tmp_file}")
-                st.error(f"❌ Grade card table not found. Check if enrollment ({enrollment}) and program ({program_code}) are valid. Page source saved to: {tmp_file}")
-            st.session_state.processing = False
-            st.stop()
-
-        headers = [th.text.strip() for th in table.find_all("th")]
-        rows = []
-        for tr in table.find_all("tr")[1:]:
-            cols = [td.text.strip() for td in tr.find_all("td")]
-            if len(cols) == len(headers):
-                rows.append(cols)
-
-        if not rows:
-            st.error("❌ No valid data found in the grade card table.")
-            st.session_state.processing = False
-            st.stop()
-
-        df = pd.DataFrame(rows, columns=headers)
-
-        # Ensure COURSE column is string type and clean it
-        if "COURSE" in df.columns:
-            df["COURSE"] = df["COURSE"].astype(str).fillna("")
-        else:
-            st.error("❌ COURSE column missing in grade card table.")
-            st.session_state.processing = False
-            st.stop()
-
-        # Convert columns to numeric
-        for col in ["Asgn1", "TERM END THEORY", "TERM END PRACTICAL"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col].replace(["-", "N/A", ""], 0), errors='coerce').fillna(0)
+            # Use system ChromeDriver if available
+            chromedriver_path = "/usr/bin/chromedriver"
+            if os.path.exists(chromedriver_path):
+                service = Service(chromedriver_path)
+                logging.info(f"Session {st.session_state.session_id} - Using system ChromeDriver at: {chromedriver_path}")
             else:
-                st.warning(f"⚠️ Column {col} missing; assuming 0 for all rows.")
-                df[col] = 0
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+                logging.info(f"Session {st.session_state.session_id} - Using webdriver-manager to install ChromeDriver")
 
-        # Filter completed courses and exclude non-MCSL lab courses
-        df_calc = df[df["STATUS"] == "COMPLETED"].copy()
-        df_calc = df_calc[df_calc["COURSE"].str.startswith("MCSL") | ~df_calc["COURSE"].str.contains("lab", case=False, na=False)]
+            logging.info(f"Session {st.session_state.session_id} - Initializing ChromeDriver")
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            resource_manager.add_driver(st.session_state.session_id, driver)
+            wait = WebDriverWait(driver, 60)  # Increased timeout to 60s
 
-        # Calculate scores
-        df_calc["30% Assignments"] = df_calc["Asgn1"] * 0.3
-        df_calc["70% Theory"] = df_calc.apply(
-            lambda row: row["TERM END PRACTICAL"] * 0.7 if row["COURSE"].startswith("MCSL") else row["TERM END THEORY"] * 0.7, axis=1
-        )
-        df_calc["Total (A+B)"] = df_calc["30% Assignments"] + df_calc["70% Theory"]
+            # Log Chrome and ChromeDriver versions
+            chrome_version = driver.capabilities['browserVersion']
+            chromedriver_version = driver.capabilities['chrome']['chromedriverVersion'].split(' ')[0]
+            logging.info(f"Session {st.session_state.session_id} - Using Chromium version: {chrome_version}, ChromeDriver version: {chromedriver_version}")
 
-        # Calculate totals
-        totals = {
-            "COURSE": "Total",
-            "Asgn1": df_calc["Asgn1"].sum(),
-            "TERM END THEORY": df_calc["TERM END THEORY"].sum(),
-            "TERM END PRACTICAL": df_calc["TERM END PRACTICAL"].sum(),
-            "30% Assignments": df_calc["30% Assignments"].sum(),
-            "70% Theory": df_calc["70% Theory"].sum(),
-            "Total (A+B)": df_calc["Total (A+B)"].sum()
-        }
+            # Navigate to IGNOU grade card page
+            driver.get("https://gradecard.ignou.ac.in/gradecard/")
+            logging.info(f"Session {st.session_state.session_id} - Navigated to IGNOU grade card page")
 
-        # Calculate total possible marks and percentage
-        num_subjects = len(df_calc)
-        total_possible_marks = num_subjects * 100
-        total_obtained_marks = df_calc["Total (A+B)"].sum()
-        percentage = round((total_obtained_marks / total_possible_marks) * 100, 2) if total_possible_marks > 0 else 0
+            # Select grade card type and program
+            Select(wait.until(EC.presence_of_element_located((By.ID, "ddlGradecardfor")))).select_by_value(gradecard_for[0])
+            Select(wait.until(EC.presence_of_element_located((By.ID, "ddlProgram")))).select_by_value(program_code)
+            driver.find_element(By.ID, "txtEnrno").send_keys(enrollment)
 
-        # Prepare display DataFrame with totals
-        df_calc_display = pd.concat([df_calc, pd.DataFrame([totals])], ignore_index=True)
-        df_calc_display.index = df_calc_display.index + 1  # Start serial number from 1
+            # Click login button
+            btn = wait.until(EC.element_to_be_clickable((By.ID, "btnlogin")))
+            driver.execute_script("arguments[0].click();", btn)
+            logging.info(f"Session {st.session_state.session_id} - Submitted form")
 
-        # Display results with improved layout
-        st.success("✅ Grade Card Parsed and Calculated!")
-        
-        # Summary section in a nice box with dynamic height
-        st.markdown('<div class="summary-box" style="min-height: fit-content;">', unsafe_allow_html=True)
-        st.subheader("📊 Summary")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Final Percentage", f"{percentage}%")
-            st.write(f"**Total Obtained Marks**: {total_obtained_marks:.2f} / {total_possible_marks:.0f}")
-        with col2:
-            st.write(f"**Total Assignment Marks**: {totals['Asgn1']:.0f}")
-            st.write(f"**Total Theory Marks**: {totals['TERM END THEORY']:.0f}")
-            st.write(f"**Total Practical Marks**: {totals['TERM END PRACTICAL']:.0f}")
-        st.markdown('</div>', unsafe_allow_html=True)
+            # Wait for results table or error message
+            wait.until(EC.any_of(
+                EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_gvDetail")),
+                EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_lblMsg"))
+            ))
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            logging.info(f"Session {st.session_state.session_id} - Parsed page source")
 
-        # Download buttons in a row
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Excel download for completed subjects
-            excel_file = create_temp_file('.xlsx')
-            try:
-                with pd.ExcelWriter(excel_file, engine='xlsxwriter') as excel_buffer:
-                    df_calc_display.to_excel(excel_buffer, sheet_name='Completed Subjects', index=False)
-                    if not df_calc.empty:
-                        df_calc.to_excel(excel_buffer, sheet_name='Completed Subjects', index=False)
-                
-                with open(excel_file, 'rb') as f:
-                    st.download_button(
-                        "📊 Download Excel Report",
-                        f,
-                        file_name=f"ignou_grade_report_{st.session_state.session_id}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-            except Exception as e:
-                logging.error(f"Session {st.session_state.session_id} - Error creating Excel file: {str(e)}")
-                st.error("Failed to create Excel report. Please try again.")
+            # Check for CAPTCHA
+            if soup.find("div", {"id": "captcha"}) or "captcha" in driver.page_source.lower():
+                st.error("❌ CAPTCHA detected. Please try again later or access the website manually to verify.")
+                with create_temp_file('.html') as tmp_file:
+                    tmp_file.write(driver.page_source.encode("utf-8"))
+                    logging.info(f"Session {st.session_state.session_id} - Page source saved to: {tmp_file}")
+                    st.write(f"Page source saved to: {tmp_file}")
+                st.session_state.processing = False
+                st.stop()
 
-        with col2:
-            # PDF download
-            pdf_file = create_temp_file('.pdf')
-            try:
-                pdf = FPDF()
-                pdf.add_page()
-                pdf.set_font("Arial", "B", 14)
-                pdf.cell(200, 10, "IGNOU Grade Report", ln=True, align="C")
-                pdf.ln(10)
-                
-                # Add summary section
-                pdf.set_font("Arial", "B", 12)
-                pdf.cell(200, 10, "Summary", ln=True)
-                pdf.set_font("Arial", size=12)
-                pdf.cell(200, 10, f"Final Percentage: {percentage}%", ln=True)
-                pdf.cell(200, 10, f"Total Obtained Marks: {total_obtained_marks:.2f} / {total_possible_marks:.0f}", ln=True)
-                pdf.cell(200, 10, f"Total Assignment Marks: {totals['Asgn1']:.0f}", ln=True)
-                pdf.cell(200, 10, f"Total Theory Marks: {totals['TERM END THEORY']:.0f}", ln=True)
-                pdf.cell(200, 10, f"Total Practical Marks: {totals['TERM END PRACTICAL']:.0f}", ln=True)
-                pdf.ln(10)
-                
-                # Add completed subjects table
-                pdf.set_font("Arial", "B", 12)
-                pdf.cell(200, 10, "Completed Subjects", ln=True)
-                pdf.set_font("Arial", size=10)
-                
-                # Table headers
-                headers = ["Course", "Assignment", "Theory", "Practical", "30% Assignment", "70% Theory", "Total"]
-                col_widths = [40, 20, 20, 20, 25, 25, 20]
-                
-                # Add headers
-                for i, header in enumerate(headers):
-                    pdf.cell(col_widths[i], 10, header, 1)
-                pdf.ln()
-                
-                # Add data rows
-                for _, row in df_calc_display.iterrows():
-                    pdf.cell(col_widths[0], 10, str(row["COURSE"]), 1)
-                    pdf.cell(col_widths[1], 10, f"{row['Asgn1']:.0f}", 1)
-                    pdf.cell(col_widths[2], 10, f"{row['TERM END THEORY']:.0f}", 1)
-                    pdf.cell(col_widths[3], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
-                    pdf.cell(col_widths[4], 10, f"{row['30% Assignments']:.2f}", 1)
-                    pdf.cell(col_widths[5], 10, f"{row['70% Theory']:.2f}", 1)
-                    pdf.cell(col_widths[6], 10, f"{row['Total (A+B)']:.2f}", 1)
-                    pdf.ln()
-                
-                # Add incomplete subjects if any
-                if not df_calc.empty:
+            # Check for error messages
+            error_message = soup.find("span", {"id": "ctl00_ContentPlaceHolder1_lblMsg"})
+            if error_message and error_message.text.strip():
+                st.error(f"❌ IGNOU website error: {error_message.text.strip()}")
+                with create_temp_file('.html') as tmp_file:
+                    tmp_file.write(driver.page_source.encode("utf-8"))
+                    logging.info(f"Session {st.session_state.session_id} - Page source saved to: {tmp_file}")
+                    st.write(f"Page source saved to: {tmp_file}")
+                st.session_state.processing = False
+                st.stop()
+
+            # Extract table
+            table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
+            if not table:
+                with create_temp_file('.html') as tmp_file:
+                    tmp_file.write(driver.page_source.encode("utf-8"))
+                    logging.error(f"Session {st.session_state.session_id} - Grade card table not found. Page source saved to: {tmp_file}")
+                    st.error(f"❌ Grade card table not found. Check if enrollment ({enrollment}) and program ({program_code}) are valid. Page source saved to: {tmp_file}")
+                st.session_state.processing = False
+                st.stop()
+
+            headers = [th.text.strip() for th in table.find_all("th")]
+            rows = []
+            for tr in table.find_all("tr")[1:]:
+                cols = [td.text.strip() for td in tr.find_all("td")]
+                if len(cols) == len(headers):
+                    rows.append(cols)
+
+            if not rows:
+                st.error("❌ No valid data found in the grade card table.")
+                st.session_state.processing = False
+                st.stop()
+
+            df = pd.DataFrame(rows, columns=headers)
+
+            # Ensure COURSE column is string type and clean it
+            if "COURSE" in df.columns:
+                df["COURSE"] = df["COURSE"].astype(str).fillna("")
+            else:
+                st.error("❌ COURSE column missing in grade card table.")
+                st.session_state.processing = False
+                st.stop()
+
+            # Convert columns to numeric
+            for col in ["Asgn1", "TERM END THEORY", "TERM END PRACTICAL"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col].replace(["-", "N/A", ""], 0), errors='coerce').fillna(0)
+                else:
+                    st.warning(f"⚠️ Column {col} missing; assuming 0 for all rows.")
+                    df[col] = 0
+
+            # Filter completed courses and exclude non-MCSL lab courses
+            df_calc = df[df["STATUS"] == "COMPLETED"].copy()
+            df_calc = df_calc[df_calc["COURSE"].str.startswith("MCSL") | ~df_calc["COURSE"].str.contains("lab", case=False, na=False)]
+
+            # Calculate scores
+            df_calc["30% Assignments"] = df_calc["Asgn1"] * 0.3
+            df_calc["70% Theory"] = df_calc.apply(
+                lambda row: row["TERM END PRACTICAL"] * 0.7 if row["COURSE"].startswith("MCSL") else row["TERM END THEORY"] * 0.7, axis=1
+            )
+            df_calc["Total (A+B)"] = df_calc["30% Assignments"] + df_calc["70% Theory"]
+
+            # Calculate totals
+            totals = {
+                "COURSE": "Total",
+                "Asgn1": df_calc["Asgn1"].sum(),
+                "TERM END THEORY": df_calc["TERM END THEORY"].sum(),
+                "TERM END PRACTICAL": df_calc["TERM END PRACTICAL"].sum(),
+                "30% Assignments": df_calc["30% Assignments"].sum(),
+                "70% Theory": df_calc["70% Theory"].sum(),
+                "Total (A+B)": df_calc["Total (A+B)"].sum()
+            }
+
+            # Calculate total possible marks and percentage
+            num_subjects = len(df_calc)
+            total_possible_marks = num_subjects * 100
+            total_obtained_marks = df_calc["Total (A+B)"].sum()
+            percentage = round((total_obtained_marks / total_possible_marks) * 100, 2) if total_possible_marks > 0 else 0
+
+            # Prepare display DataFrame with totals
+            df_calc_display = pd.concat([df_calc, pd.DataFrame([totals])], ignore_index=True)
+            df_calc_display.index = df_calc_display.index + 1  # Start serial number from 1
+
+            # Display results with improved layout
+            st.success("✅ Grade Card Parsed and Calculated!")
+            
+            # Summary section in a nice box with dynamic height
+            st.markdown('<div class="summary-box" style="min-height: fit-content;">', unsafe_allow_html=True)
+            st.subheader("📊 Summary")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Final Percentage", f"{percentage}%")
+                st.write(f"**Total Obtained Marks**: {total_obtained_marks:.2f} / {total_possible_marks:.0f}")
+            with col2:
+                st.write(f"**Total Assignment Marks**: {totals['Asgn1']:.0f}")
+                st.write(f"**Total Theory Marks**: {totals['TERM END THEORY']:.0f}")
+                st.write(f"**Total Practical Marks**: {totals['TERM END PRACTICAL']:.0f}")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            # Download buttons in a row
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Excel download for completed subjects
+                excel_file = create_temp_file('.xlsx')
+                try:
+                    with pd.ExcelWriter(excel_file, engine='xlsxwriter') as excel_buffer:
+                        df_calc_display.to_excel(excel_buffer, sheet_name='Completed Subjects', index=False)
+                        if not df_calc.empty:
+                            df_calc.to_excel(excel_buffer, sheet_name='Completed Subjects', index=False)
+                    
+                    with open(excel_file, 'rb') as f:
+                        st.download_button(
+                            "📊 Download Excel Report",
+                            f,
+                            file_name=f"ignou_grade_report_{st.session_state.session_id}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                except Exception as e:
+                    logging.error(f"Session {st.session_state.session_id} - Error creating Excel file: {str(e)}")
+                    st.error("Failed to create Excel report. Please try again.")
+
+            with col2:
+                # PDF download
+                pdf_file = create_temp_file('.pdf')
+                try:
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_font("Arial", "B", 14)
+                    pdf.cell(200, 10, "IGNOU Grade Report", ln=True, align="C")
                     pdf.ln(10)
+                    
+                    # Add summary section
                     pdf.set_font("Arial", "B", 12)
-                    pdf.cell(200, 10, "Incomplete Subjects", ln=True)
+                    pdf.cell(200, 10, "Summary", ln=True)
+                    pdf.set_font("Arial", size=12)
+                    pdf.cell(200, 10, f"Final Percentage: {percentage}%", ln=True)
+                    pdf.cell(200, 10, f"Total Obtained Marks: {total_obtained_marks:.2f} / {total_possible_marks:.0f}", ln=True)
+                    pdf.cell(200, 10, f"Total Assignment Marks: {totals['Asgn1']:.0f}", ln=True)
+                    pdf.cell(200, 10, f"Total Theory Marks: {totals['TERM END THEORY']:.0f}", ln=True)
+                    pdf.cell(200, 10, f"Total Practical Marks: {totals['TERM END PRACTICAL']:.0f}", ln=True)
+                    pdf.ln(10)
+                    
+                    # Add completed subjects table
+                    pdf.set_font("Arial", "B", 12)
+                    pdf.cell(200, 10, "Completed Subjects", ln=True)
                     pdf.set_font("Arial", size=10)
                     
-                    # Table headers for incomplete subjects
-                    headers = ["Course", "Status", "Assignment", "Theory", "Practical"]
-                    col_widths = [50, 30, 30, 30, 30]
+                    # Table headers
+                    headers = ["Course", "Assignment", "Theory", "Practical", "30% Assignment", "70% Theory", "Total"]
+                    col_widths = [40, 20, 20, 20, 25, 25, 20]
                     
                     # Add headers
                     for i, header in enumerate(headers):
@@ -524,97 +498,62 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                     pdf.ln()
                     
                     # Add data rows
-                    for _, row in df_calc.iterrows():
+                    for _, row in df_calc_display.iterrows():
                         pdf.cell(col_widths[0], 10, str(row["COURSE"]), 1)
-                        pdf.cell(col_widths[1], 10, str(row["STATUS"]), 1)
-                        pdf.cell(col_widths[2], 10, f"{row['Asgn1']:.0f}", 1)
-                        pdf.cell(col_widths[3], 10, f"{row['TERM END THEORY']:.0f}", 1)
-                        pdf.cell(col_widths[4], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
+                        pdf.cell(col_widths[1], 10, f"{row['Asgn1']:.0f}", 1)
+                        pdf.cell(col_widths[2], 10, f"{row['TERM END THEORY']:.0f}", 1)
+                        pdf.cell(col_widths[3], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
+                        pdf.cell(col_widths[4], 10, f"{row['30% Assignments']:.2f}", 1)
+                        pdf.cell(col_widths[5], 10, f"{row['70% Theory']:.2f}", 1)
+                        pdf.cell(col_widths[6], 10, f"{row['Total (A+B)']:.2f}", 1)
                         pdf.ln()
-                
-                pdf.output(pdf_file)
-                
-                with open(pdf_file, 'rb') as f:
-                    st.download_button(
-                        "📄 Download PDF Report",
-                        f,
-                        file_name=f"ignou_grade_report_{st.session_state.session_id}.pdf",
-                        use_container_width=True
-                    )
-            except Exception as e:
-                logging.error(f"Session {st.session_state.session_id} - Error creating PDF file: {str(e)}")
-                st.error("Failed to create PDF report. Please try again.")
+                    
+                    # Add incomplete subjects if any
+                    if not df_calc.empty:
+                        pdf.ln(10)
+                        pdf.set_font("Arial", "B", 12)
+                        pdf.cell(200, 10, "Incomplete Subjects", ln=True)
+                        pdf.set_font("Arial", size=10)
+                        
+                        # Table headers for incomplete subjects
+                        headers = ["Course", "Status", "Assignment", "Theory", "Practical"]
+                        col_widths = [50, 30, 30, 30, 30]
+                        
+                        # Add headers
+                        for i, header in enumerate(headers):
+                            pdf.cell(col_widths[i], 10, header, 1)
+                        pdf.ln()
+                        
+                        # Add data rows
+                        for _, row in df_calc.iterrows():
+                            pdf.cell(col_widths[0], 10, str(row["COURSE"]), 1)
+                            pdf.cell(col_widths[1], 10, str(row["STATUS"]), 1)
+                            pdf.cell(col_widths[2], 10, f"{row['Asgn1']:.0f}", 1)
+                            pdf.cell(col_widths[3], 10, f"{row['TERM END THEORY']:.0f}", 1)
+                            pdf.cell(col_widths[4], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
+                            pdf.ln()
+                    
+                    pdf.output(pdf_file)
+                    
+                    with open(pdf_file, 'rb') as f:
+                        st.download_button(
+                            "📄 Download PDF Report",
+                            f,
+                            file_name=f"ignou_grade_report_{st.session_state.session_id}.pdf",
+                            use_container_width=True
+                        )
+                except Exception as e:
+                    logging.error(f"Session {st.session_state.session_id} - Error creating PDF file: {str(e)}")
+                    st.error("Failed to create PDF report. Please try again.")
 
-        # Completed subjects table with dynamic height
-        st.markdown('<div style="min-height: fit-content;">', unsafe_allow_html=True)
-        st.subheader("✅ Completed Subjects")
-        column_config = {
-            "COURSE": st.column_config.TextColumn(
-                "Course",
-                width="medium",
-                help="Course Code"
-            ),
-            "Asgn1": st.column_config.NumberColumn(
-                "Assignment",
-                width="small",
-                format="%.0f",
-                help="Assignment Marks"
-            ),
-            "TERM END THEORY": st.column_config.NumberColumn(
-                "Theory",
-                width="small",
-                format="%.0f",
-                help="Theory Marks"
-            ),
-            "TERM END PRACTICAL": st.column_config.NumberColumn(
-                "Practical",
-                width="small",
-                format="%.0f",
-                help="Practical Marks"
-            ),
-            "30% Assignments": st.column_config.NumberColumn(
-                "30% Assignment",
-                width="small",
-                format="%.2f",
-                help="30% of Assignment Marks"
-            ),
-            "70% Theory": st.column_config.NumberColumn(
-                "70% Theory/Practical",
-                width="small",
-                format="%.2f",
-                help="70% of Theory/Practical Marks"
-            ),
-            "Total (A+B)": st.column_config.NumberColumn(
-                "Total",
-                width="small",
-                format="%.2f",
-                help="Total Marks"
-            )
-        }
-
-        st.dataframe(
-            df_calc_display,
-            use_container_width=True,
-            column_config=column_config,
-            hide_index=False
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Incomplete subjects table with dynamic height
-        df_incomplete = df[df["STATUS"] != "COMPLETED"]
-        if not df_incomplete.empty:
+            # Completed subjects table with dynamic height
             st.markdown('<div style="min-height: fit-content;">', unsafe_allow_html=True)
-            st.subheader("⚠️ Not Completed / Incomplete Subjects")
-            incomplete_config = {
+            st.subheader("✅ Completed Subjects")
+            column_config = {
                 "COURSE": st.column_config.TextColumn(
                     "Course",
                     width="medium",
                     help="Course Code"
-                ),
-                "STATUS": st.column_config.TextColumn(
-                    "Status",
-                    width="small",
-                    help="Course Status"
                 ),
                 "Asgn1": st.column_config.NumberColumn(
                     "Assignment",
@@ -633,48 +572,111 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                     width="small",
                     format="%.0f",
                     help="Practical Marks"
+                ),
+                "30% Assignments": st.column_config.NumberColumn(
+                    "30% Assignment",
+                    width="small",
+                    format="%.2f",
+                    help="30% of Assignment Marks"
+                ),
+                "70% Theory": st.column_config.NumberColumn(
+                    "70% Theory/Practical",
+                    width="small",
+                    format="%.2f",
+                    help="70% of Theory/Practical Marks"
+                ),
+                "Total (A+B)": st.column_config.NumberColumn(
+                    "Total",
+                    width="small",
+                    format="%.2f",
+                    help="Total Marks"
                 )
             }
+
             st.dataframe(
-                df_incomplete,
+                df_calc_display,
                 use_container_width=True,
-                column_config=incomplete_config,
-                hide_index=True
+                column_config=column_config,
+                hide_index=False
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Clean up temporary files
-        try:
-            os.remove(excel_file)
-            os.remove(pdf_file)
-        except Exception as e:
-            logging.error(f"Session {st.session_state.session_id} - Error cleaning up temporary files: {str(e)}")
+            # Incomplete subjects table with dynamic height
+            df_incomplete = df[df["STATUS"] != "COMPLETED"]
+            if not df_incomplete.empty:
+                st.markdown('<div style="min-height: fit-content;">', unsafe_allow_html=True)
+                st.subheader("⚠️ Not Completed / Incomplete Subjects")
+                incomplete_config = {
+                    "COURSE": st.column_config.TextColumn(
+                        "Course",
+                        width="medium",
+                        help="Course Code"
+                    ),
+                    "STATUS": st.column_config.TextColumn(
+                        "Status",
+                        width="small",
+                        help="Course Status"
+                    ),
+                    "Asgn1": st.column_config.NumberColumn(
+                        "Assignment",
+                        width="small",
+                        format="%.0f",
+                        help="Assignment Marks"
+                    ),
+                    "TERM END THEORY": st.column_config.NumberColumn(
+                        "Theory",
+                        width="small",
+                        format="%.0f",
+                        help="Theory Marks"
+                    ),
+                    "TERM END PRACTICAL": st.column_config.NumberColumn(
+                        "Practical",
+                        width="small",
+                        format="%.0f",
+                        help="Practical Marks"
+                    )
+                }
+                st.dataframe(
+                    df_incomplete,
+                    use_container_width=True,
+                    column_config=incomplete_config,
+                    hide_index=True
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
 
-        st.session_state.processing = False
-        break
-
-    except WebDriverException as e:
-        retry_count += 1
-        logging.error(f"Session {st.session_state.session_id} - Attempt {retry_count} failed due to WebDriver issue: {str(e)}")
-        if retry_count > max_retries:
-            st.error(f"⏳ Failed to initialize ChromeDriver after {max_retries + 1} attempts. Please try again later.")
+            # Clean up temporary files
             try:
-                result = subprocess.run(["chromium", "--version"], capture_output=True, text=True)
-                logging.info(f"Session {st.session_state.session_id} - Chromium version check: {result.stdout or result.stderr}")
-            except Exception as debug_e:
-                logging.error(f"Session {st.session_state.session_id} - Failed to check chromium version: {str(debug_e)}")
+                os.remove(excel_file)
+                os.remove(pdf_file)
+            except Exception as e:
+                logging.error(f"Session {st.session_state.session_id} - Error cleaning up temporary files: {str(e)}")
+
             st.session_state.processing = False
-        else:
-            st.warning(f"⚠️ Attempt {retry_count} failed. Retrying in 5 seconds...")
-            time.sleep(5)
-    except Exception as e:
-        logging.error(f"Session {st.session_state.session_id} - Error: {str(e)}")
-        st.error("❌ An error occurred. Please try again later.")
-        st.session_state.processing = False
-    finally:
-        if driver:
-            resource_manager.remove_driver(st.session_state.session_id)
-        st.session_state.processing = False
+            break  # Successfully completed, exit the retry loop
+
+        except WebDriverException as e:
+            retry_count += 1
+            logging.error(f"Session {st.session_state.session_id} - Attempt {retry_count} failed due to WebDriver issue: {str(e)}")
+            if retry_count > max_retries:
+                st.error(f"⏳ Failed to initialize ChromeDriver after {max_retries + 1} attempts. Please try again later.")
+                try:
+                    result = subprocess.run(["chromium", "--version"], capture_output=True, text=True)
+                    logging.info(f"Session {st.session_state.session_id} - Chromium version check: {result.stdout or result.stderr}")
+                except Exception as debug_e:
+                    logging.error(f"Session {st.session_state.session_id} - Failed to check chromium version: {str(debug_e)}")
+                st.session_state.processing = False
+            else:
+                st.warning(f"⚠️ Attempt {retry_count} failed. Retrying in 5 seconds...")
+                time.sleep(5)
+        except Exception as e:
+            logging.error(f"Session {st.session_state.session_id} - Error: {str(e)}")
+            st.error("❌ An error occurred. Please try again later.")
+            st.session_state.processing = False
+            break  # Exit the retry loop on other exceptions
+        finally:
+            if driver:
+                resource_manager.remove_driver(st.session_state.session_id)
+            st.session_state.processing = False
 
 # Add session end handler with better cleanup
 def on_session_end():

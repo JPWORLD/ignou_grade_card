@@ -171,6 +171,16 @@ st.markdown("""
         border-radius: 0.5rem;
         margin: 1rem 0;
     }
+    .stMetric [data-testid="stMetricValue"] {
+        color: #1E88E5;
+        font-size: 2rem;
+        font-weight: bold;
+    }
+    .stMetric [data-testid="stMetricLabel"] {
+        color: #262730;
+        font-size: 1.2rem;
+        font-weight: 500;
+    }
     .stAlert {
         padding: 1rem;
         border-radius: 0.5rem;

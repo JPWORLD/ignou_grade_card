@@ -293,6 +293,20 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
+            # Performance optimizations
+            chrome_options.add_argument("--disable-extensions")
+            chrome_options.add_argument("--disable-notifications")
+            chrome_options.add_argument("--disable-infobars")
+            chrome_options.add_argument("--disable-popup-blocking")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+            chrome_options.add_argument("--disable-site-isolation-trials")
+            chrome_options.add_argument("--disable-web-security")
+            chrome_options.add_argument("--disable-features=NetworkService")
+            chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+            chrome_options.add_argument("--disable-features=TranslateUI")
+            chrome_options.add_argument("--disable-features=Translate")
+            chrome_options.add_argument("--disable-features=TranslateNewUX")
 
             # Find Chromium binary
             binary_path = find_chromium_binary()
@@ -481,69 +495,71 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                 try:
                     pdf = FPDF()
                     pdf.add_page()
-                    pdf.set_font("Arial", "B", 14)
-                    pdf.cell(200, 10, "IGNOU Grade Report", ln=True, align="C")
+                    pdf.set_font("helvetica", "B", 14)
+                    pdf.cell(200, 10, "IGNOU Grade Report", new_x="LMARGIN", new_y="NEXT", align="C")
                     pdf.ln(10)
                     
                     # Add summary section
-                    pdf.set_font("Arial", "B", 12)
-                    pdf.cell(200, 10, "Summary", ln=True)
-                    pdf.set_font("Arial", size=12)
-                    pdf.cell(200, 10, f"Final Percentage: {percentage}%", ln=True)
-                    pdf.cell(200, 10, f"Total Obtained Marks: {total_obtained_marks:.2f} / {total_possible_marks:.0f}", ln=True)
-                    pdf.cell(200, 10, f"Total Assignment Marks: {totals['Asgn1']:.0f}", ln=True)
-                    pdf.cell(200, 10, f"Total Theory Marks: {totals['TERM END THEORY']:.0f}", ln=True)
-                    pdf.cell(200, 10, f"Total Practical Marks: {totals['TERM END PRACTICAL']:.0f}", ln=True)
+                    pdf.set_font("helvetica", "B", 12)
+                    pdf.cell(200, 10, "Summary", new_x="LMARGIN", new_y="NEXT")
+                    pdf.set_font("helvetica", size=12)
+                    pdf.cell(200, 10, f"Final Percentage: {percentage}%", new_x="LMARGIN", new_y="NEXT")
+                    pdf.cell(200, 10, f"Total Obtained Marks: {total_obtained_marks:.2f} / {total_possible_marks:.0f}", new_x="LMARGIN", new_y="NEXT")
+                    pdf.cell(200, 10, f"Total Assignment Marks: {totals['Asgn1']:.0f}", new_x="LMARGIN", new_y="NEXT")
+                    pdf.cell(200, 10, f"Total Theory Marks: {totals['TERM END THEORY']:.0f}", new_x="LMARGIN", new_y="NEXT")
+                    pdf.cell(200, 10, f"Total Practical Marks: {totals['TERM END PRACTICAL']:.0f}", new_x="LMARGIN", new_y="NEXT")
                     pdf.ln(10)
                     
                     # Add completed subjects table
-                    pdf.set_font("Arial", "B", 12)
-                    pdf.cell(200, 10, "Completed Subjects", ln=True)
-                    pdf.set_font("Arial", size=10)
+                    pdf.set_font("helvetica", "B", 12)
+                    pdf.cell(200, 10, "Completed Subjects", new_x="LMARGIN", new_y="NEXT")
+                    pdf.set_font("helvetica", size=10)
                     
-                    # Table headers
-                    headers = ["Course", "Assignment", "Theory", "Practical", "30% Assignment", "70% Theory", "Total"]
-                    col_widths = [40, 20, 20, 20, 25, 25, 20]
+                    # Table headers with serial number
+                    headers = ["S.No.", "Course", "Assignment", "Theory", "Practical", "30% Assignment", "70% Theory", "Total"]
+                    col_widths = [10, 35, 20, 20, 20, 25, 25, 20]
                     
                     # Add headers
                     for i, header in enumerate(headers):
                         pdf.cell(col_widths[i], 10, header, 1)
                     pdf.ln()
                     
-                    # Add data rows
-                    for _, row in df_calc_display.iterrows():
-                        pdf.cell(col_widths[0], 10, str(row["COURSE"]), 1)
-                        pdf.cell(col_widths[1], 10, f"{row['Asgn1']:.0f}", 1)
-                        pdf.cell(col_widths[2], 10, f"{row['TERM END THEORY']:.0f}", 1)
-                        pdf.cell(col_widths[3], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
-                        pdf.cell(col_widths[4], 10, f"{row['30% Assignments']:.2f}", 1)
-                        pdf.cell(col_widths[5], 10, f"{row['70% Theory']:.2f}", 1)
-                        pdf.cell(col_widths[6], 10, f"{row['Total (A+B)']:.2f}", 1)
+                    # Add data rows with serial numbers
+                    for idx, (_, row) in enumerate(df_calc_display.iterrows(), 1):
+                        pdf.cell(col_widths[0], 10, str(idx), 1)
+                        pdf.cell(col_widths[1], 10, str(row["COURSE"]), 1)
+                        pdf.cell(col_widths[2], 10, f"{row['Asgn1']:.0f}", 1)
+                        pdf.cell(col_widths[3], 10, f"{row['TERM END THEORY']:.0f}", 1)
+                        pdf.cell(col_widths[4], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
+                        pdf.cell(col_widths[5], 10, f"{row['30% Assignments']:.2f}", 1)
+                        pdf.cell(col_widths[6], 10, f"{row['70% Theory']:.2f}", 1)
+                        pdf.cell(col_widths[7], 10, f"{row['Total (A+B)']:.2f}", 1)
                         pdf.ln()
                     
                     # Add incomplete subjects if any
                     if not df_calc.empty:
                         pdf.ln(10)
-                        pdf.set_font("Arial", "B", 12)
-                        pdf.cell(200, 10, "Incomplete Subjects", ln=True)
-                        pdf.set_font("Arial", size=10)
+                        pdf.set_font("helvetica", "B", 12)
+                        pdf.cell(200, 10, "Incomplete Subjects", new_x="LMARGIN", new_y="NEXT")
+                        pdf.set_font("helvetica", size=10)
                         
-                        # Table headers for incomplete subjects
-                        headers = ["Course", "Status", "Assignment", "Theory", "Practical"]
-                        col_widths = [50, 30, 30, 30, 30]
+                        # Table headers for incomplete subjects with serial number
+                        headers = ["S.No.", "Course", "Status", "Assignment", "Theory", "Practical"]
+                        col_widths = [10, 45, 25, 25, 25, 25]
                         
                         # Add headers
                         for i, header in enumerate(headers):
                             pdf.cell(col_widths[i], 10, header, 1)
                         pdf.ln()
                         
-                        # Add data rows
-                        for _, row in df_calc.iterrows():
-                            pdf.cell(col_widths[0], 10, str(row["COURSE"]), 1)
-                            pdf.cell(col_widths[1], 10, str(row["STATUS"]), 1)
-                            pdf.cell(col_widths[2], 10, f"{row['Asgn1']:.0f}", 1)
-                            pdf.cell(col_widths[3], 10, f"{row['TERM END THEORY']:.0f}", 1)
-                            pdf.cell(col_widths[4], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
+                        # Add data rows with serial numbers
+                        for idx, (_, row) in enumerate(df_calc.iterrows(), 1):
+                            pdf.cell(col_widths[0], 10, str(idx), 1)
+                            pdf.cell(col_widths[1], 10, str(row["COURSE"]), 1)
+                            pdf.cell(col_widths[2], 10, str(row["STATUS"]), 1)
+                            pdf.cell(col_widths[3], 10, f"{row['Asgn1']:.0f}", 1)
+                            pdf.cell(col_widths[4], 10, f"{row['TERM END THEORY']:.0f}", 1)
+                            pdf.cell(col_widths[5], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
                             pdf.ln()
                     
                     pdf.output(pdf_file)

@@ -54,28 +54,14 @@ def setup_logging():
                     print(f"Error removing old log {log_path}: {e}")
     
     log_file = os.path.join(log_dir, f"ignou_calculator_{session_id}.log")
-    
-    # Create a custom formatter that includes session_id
-    class SessionFormatter(logging.Formatter):
-        def format(self, record):
-            record.session_id = session_id
-            return super().format(record)
-    
-    # Create handlers
-    file_handler = logging.FileHandler(log_file)
-    console_handler = logging.StreamHandler()
-    
-    # Set formatter for both handlers
-    formatter = SessionFormatter('%(asctime)s - %(levelname)s - [%(session_id)s] - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # Setup root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-    
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - [%(session_id)s] - %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
     return session_id
 
 # Initialize session state with better defaults

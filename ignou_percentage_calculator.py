@@ -293,8 +293,8 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             # Display results with improved layout
             st.success("✅ Grade Card Parsed and Calculated!")
             
-            # Summary section in a nice box
-            st.markdown('<div class="summary-box">', unsafe_allow_html=True)
+            # Summary section in a nice box with dynamic height
+            st.markdown('<div class="summary-box" style="min-height: fit-content;">', unsafe_allow_html=True)
             st.subheader("📊 Summary")
             col1, col2 = st.columns(2)
             with col1:
@@ -306,7 +306,107 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                 st.write(f"**Total Practical Marks**: {totals['TERM END PRACTICAL']:.0f}")
             st.markdown('</div>', unsafe_allow_html=True)
 
-            # Completed subjects table
+            # Download buttons in a row
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Excel download for completed subjects
+                excel_buffer = pd.ExcelWriter('temp_grade_report.xlsx', engine='xlsxwriter')
+                df_calc_display.to_excel(excel_buffer, sheet_name='Completed Subjects', index=False)
+                if not df_calc.empty:
+                    df_calc.to_excel(excel_buffer, sheet_name='Completed Subjects', index=False)
+                excel_buffer.close()
+                
+                with open('temp_grade_report.xlsx', 'rb') as f:
+                    st.download_button(
+                        "📊 Download Excel Report",
+                        f,
+                        file_name="ignou_grade_report.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+
+            with col2:
+                # PDF download
+                tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.set_font("Arial", "B", 14)
+                pdf.cell(200, 10, "IGNOU Grade Report", ln=True, align="C")
+                pdf.ln(10)
+                
+                # Add summary section
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(200, 10, "Summary", ln=True)
+                pdf.set_font("Arial", size=12)
+                pdf.cell(200, 10, f"Final Percentage: {percentage}%", ln=True)
+                pdf.cell(200, 10, f"Total Obtained Marks: {total_obtained_marks:.2f} / {total_possible_marks:.0f}", ln=True)
+                pdf.cell(200, 10, f"Total Assignment Marks: {totals['Asgn1']:.0f}", ln=True)
+                pdf.cell(200, 10, f"Total Theory Marks: {totals['TERM END THEORY']:.0f}", ln=True)
+                pdf.cell(200, 10, f"Total Practical Marks: {totals['TERM END PRACTICAL']:.0f}", ln=True)
+                pdf.ln(10)
+                
+                # Add completed subjects table
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(200, 10, "Completed Subjects", ln=True)
+                pdf.set_font("Arial", size=10)
+                
+                # Table headers
+                headers = ["Course", "Assignment", "Theory", "Practical", "30% Assignment", "70% Theory", "Total"]
+                col_widths = [40, 20, 20, 20, 25, 25, 20]
+                
+                # Add headers
+                for i, header in enumerate(headers):
+                    pdf.cell(col_widths[i], 10, header, 1)
+                pdf.ln()
+                
+                # Add data rows
+                for _, row in df_calc_display.iterrows():
+                    pdf.cell(col_widths[0], 10, str(row["COURSE"]), 1)
+                    pdf.cell(col_widths[1], 10, f"{row['Asgn1']:.0f}", 1)
+                    pdf.cell(col_widths[2], 10, f"{row['TERM END THEORY']:.0f}", 1)
+                    pdf.cell(col_widths[3], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
+                    pdf.cell(col_widths[4], 10, f"{row['30% Assignments']:.2f}", 1)
+                    pdf.cell(col_widths[5], 10, f"{row['70% Theory']:.2f}", 1)
+                    pdf.cell(col_widths[6], 10, f"{row['Total (A+B)']:.2f}", 1)
+                    pdf.ln()
+                
+                # Add incomplete subjects if any
+                if not df_calc.empty:
+                    pdf.ln(10)
+                    pdf.set_font("Arial", "B", 12)
+                    pdf.cell(200, 10, "Incomplete Subjects", ln=True)
+                    pdf.set_font("Arial", size=10)
+                    
+                    # Table headers for incomplete subjects
+                    headers = ["Course", "Status", "Assignment", "Theory", "Practical"]
+                    col_widths = [50, 30, 30, 30, 30]
+                    
+                    # Add headers
+                    for i, header in enumerate(headers):
+                        pdf.cell(col_widths[i], 10, header, 1)
+                    pdf.ln()
+                    
+                    # Add data rows
+                    for _, row in df_calc.iterrows():
+                        pdf.cell(col_widths[0], 10, str(row["COURSE"]), 1)
+                        pdf.cell(col_widths[1], 10, str(row["STATUS"]), 1)
+                        pdf.cell(col_widths[2], 10, f"{row['Asgn1']:.0f}", 1)
+                        pdf.cell(col_widths[3], 10, f"{row['TERM END THEORY']:.0f}", 1)
+                        pdf.cell(col_widths[4], 10, f"{row['TERM END PRACTICAL']:.0f}", 1)
+                        pdf.ln()
+                
+                pdf.output(tmp_file.name)
+                with open(tmp_file.name, "rb") as f:
+                    st.download_button(
+                        "📄 Download PDF Report",
+                        f,
+                        file_name="ignou_grade_report.pdf",
+                        use_container_width=True
+                    )
+
+            # Completed subjects table with dynamic height
+            st.markdown('<div style="min-height: fit-content;">', unsafe_allow_html=True)
             st.subheader("✅ Completed Subjects")
             column_config = {
                 "COURSE": st.column_config.TextColumn(
@@ -358,10 +458,12 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                 column_config=column_config,
                 hide_index=False
             )
+            st.markdown('</div>', unsafe_allow_html=True)
 
-            # Incomplete subjects table
+            # Incomplete subjects table with dynamic height
             df_incomplete = df[df["STATUS"] != "COMPLETED"]
             if not df_incomplete.empty:
+                st.markdown('<div style="min-height: fit-content;">', unsafe_allow_html=True)
                 st.subheader("⚠️ Not Completed / Incomplete Subjects")
                 incomplete_config = {
                     "COURSE": st.column_config.TextColumn(
@@ -399,39 +501,14 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                     column_config=incomplete_config,
                     hide_index=True
                 )
+                st.markdown('</div>', unsafe_allow_html=True)
 
-            # PDF download button in a centered container
-            st.markdown('<div style="text-align: center;">', unsafe_allow_html=True)
-            tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", "B", 14)
-            pdf.cell(200, 10, "IGNOU Grade Report", ln=True, align="C")
-            pdf.ln(10)
-            pdf.set_font("Arial", size=12)
-            for _, row in df_calc.iterrows():
-                course = row["COURSE"] or "Unknown"
-                total = row["Total (A+B)"] or 0
-                asgn = row["Asgn1"] or 0
-                theory = row["TERM END THEORY"] or 0
-                practical = row["TERM END PRACTICAL"] or 0
-                pdf.cell(200, 10, f"{course}: {total:.2f} (Asgn: {asgn}, TEE: {theory}, PRACT: {practical})", ln=True)
-            pdf.ln(10)
-            pdf.set_font("Arial", "B", 12)
-            pdf.cell(200, 10, f"Final Percentage: {percentage}%", ln=True)
-            pdf.cell(200, 10, f"Total Obtained Marks: {total_obtained_marks:.2f} / {total_possible_marks:.0f}", ln=True)
-            pdf.cell(200, 10, f"Total Assignment Marks: {totals['Asgn1']:.0f}", ln=True)
-            pdf.cell(200, 10, f"Total Theory Marks: {totals['TERM END THEORY']:.0f}", ln=True)
-            pdf.cell(200, 10, f"Total Practical Marks: {totals['TERM END PRACTICAL']:.0f}", ln=True)
-            pdf.output(tmp_file.name)
-            with open(tmp_file.name, "rb") as f:
-                st.download_button(
-                    "📄 Download PDF Report",
-                    f,
-                    file_name="ignou_grade_report.pdf",
-                    use_container_width=False
-                )
-            st.markdown('</div>', unsafe_allow_html=True)
+            # Clean up temporary files
+            try:
+                os.remove('temp_grade_report.xlsx')
+                os.remove(tmp_file.name)
+            except Exception as e:
+                logging.error("Error cleaning up temporary files: %s", str(e))
 
             st.session_state.processing = False
             break

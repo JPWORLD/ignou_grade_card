@@ -120,7 +120,14 @@ def setup_logging():
     logging.basicConfig(level=logging.INFO)
     return session_id
 
-# Initialize session state with better defaults
+# Initialize Streamlit page config first
+st.set_page_config(
+    page_title="IGNOU Grade Card Automation",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Initialize session state variables
 if "session_id" not in st.session_state:
     st.session_state.session_id = setup_logging()
 if "temp_files" not in st.session_state:
@@ -133,6 +140,207 @@ if "retry_count" not in st.session_state:
     st.session_state.retry_count = 0
 
 resource_manager = ResourceManager()
+
+# Custom CSS
+st.markdown("""
+    <style>
+    .main {
+        padding: 2rem;
+    }
+    .stButton>button {
+        width: 100%;
+        margin-top: 1rem;
+    }
+    .stDataFrame {
+        width: 100%;
+    }
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    .stMetric [data-testid="stMetricValue"] {
+        color: #1E88E5;
+        font-size: 2rem;
+        font-weight: bold;
+    }
+    .stMetric [data-testid="stMetricLabel"] {
+        color: #262730;
+        font-size: 1.2rem;
+        font-weight: 500;
+    }
+    .stAlert {
+        padding: 1rem;
+        border-radius: 0.5rem;
+    }
+    .summary-box {
+        background-color: #f0f2f6;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Title with custom styling
+st.markdown("""
+    <h1 style='text-align: center; color: #1E88E5; margin-bottom: 2rem;'>
+        🎓 IGNOU Grade Card Calculator
+    </h1>
+""", unsafe_allow_html=True)
+
+# Create two columns for input fields
+col1, col2 = st.columns(2)
+
+# Initialize input variables
+enrollment = ""
+gradecard_for = None
+program_code = None
+
+with col1:
+    enrollment = st.text_input(
+        "Enrollment Number",
+        max_chars=10,
+        placeholder="Enter 9 or 10-digit enrollment number",
+        help="Enter your 9 or 10-digit IGNOU enrollment number"
+    )
+    gradecard_for = st.selectbox(
+        "Gradecard For",
+        [
+            ("1", "BCA/MCA/MP/PGDCA etc."),
+            ("2", "BDP/BA/B.COM/B.Sc./ASSO Programmes"),
+            ("3", "CBCS Programmes"),
+            ("4", "Other Programmes")
+        ],
+        format_func=lambda x: x[1],
+        index=0,
+        help="Select your program category"
+    )
+
+with col2:
+    valid_programs = [
+        "BCA", "BCAOL", "BCA_NEW", "BCA_NEWOL", "MBF", "MCA", "MCAOL",
+        "MCA_NEW", "MCA_NEWOL", "MP", "MPB", "PGDCA", "PGDCA_NEW",
+        "PGDHRM", "PGDFM", "PGDOM", "PGDMM", "PGDFMP"
+    ]
+    program_code = st.selectbox(
+        "Programme Code",
+        valid_programs,
+        index=valid_programs.index("MCAOL"),
+        help="Select your program code"
+    )
+
+# Function to find Chromium binary
+def find_chromium_binary():
+    possible_paths = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/lib/chromium-browser/chromium",
+        "/usr/lib/chromium/chromium"
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            logging.info("Found Chromium binary at: %s", path)
+            return path
+    logging.error("No Chromium binary found in paths: %s", possible_paths)
+    return None
+
+# Function to log enrollment number
+def log_enrollment(enrollment_number):
+    logging.info(f"Processing enrollment number: {enrollment_number}")
+
+# Extract student details from the page
+def extract_student_details(soup):
+    try:
+        # Find the student details table
+        details_table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
+        if details_table:
+            # Get the first row which contains student details
+            first_row = details_table.find("tr")
+            if first_row:
+                cells = first_row.find_all("td")
+                if len(cells) >= 3:
+                    return {
+                        "enrollment": cells[0].text.strip(),
+                        "name": cells[1].text.strip(),
+                        "program": cells[2].text.strip()
+                    }
+    except Exception as e:
+        logging.error(f"Error extracting student details: {str(e)}")
+    return None
+
+# Add new helper functions for robust element interaction
+def wait_for_page_load(driver, timeout=30):
+    """Wait for the page to be fully loaded and interactive"""
+    try:
+        # Wait for document ready state
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script('return document.readyState') == 'complete'
+        )
+        # Additional wait for jQuery if present
+        try:
+            WebDriverWait(driver, 5).until(
+                lambda d: d.execute_script('return jQuery.active == 0')
+            )
+        except:
+            pass  # jQuery not present, continue
+        # Small delay to ensure dynamic content is loaded
+        time.sleep(1)
+    except TimeoutException:
+        logging.warning("Page load timeout - continuing anyway")
+
+def wait_and_find_element(driver, by, value, timeout=10, clickable=False):
+    """Wait for an element to be present and optionally clickable"""
+    try:
+        # First check if element exists in DOM
+        element = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((by, value))
+        )
+        # Then check if it's visible
+        WebDriverWait(driver, timeout).until(
+            EC.visibility_of_element_located((by, value))
+        )
+        # Finally check if it's clickable if requested
+        if clickable:
+            WebDriverWait(driver, timeout).until(
+                EC.element_to_be_clickable((by, value))
+            )
+        return element
+    except TimeoutException:
+        logging.error(f"Element not found or not ready: {by}={value}")
+        return None
+
+def safe_click(driver, element):
+    """Safely click an element using JavaScript if regular click fails"""
+    try:
+        element.click()
+    except ElementNotInteractableException:
+        driver.execute_script("arguments[0].click();", element)
+
+def ensure_page_loaded(driver):
+    """Ensure the page is properly loaded before proceeding"""
+    try:
+        # Check if we're on the correct page
+        if "gradecard.ignou.ac.in" not in driver.current_url:
+            driver.get("https://gradecard.ignou.ac.in/gradecard/")
+            wait_for_page_load(driver)
+        
+        # Wait for any loading indicators to disappear
+        try:
+            WebDriverWait(driver, 5).until_not(
+                EC.presence_of_element_located((By.CLASS_NAME, "loading"))
+            )
+        except:
+            pass  # No loading indicator found, continue
+        
+        # Verify page title or some key element
+        if not driver.find_elements(By.ID, "ddlGradecardfor"):
+            raise WebDriverException("Grade card page not properly loaded")
+            
+    except Exception as e:
+        logging.error(f"Page load verification failed: {str(e)}")
+        raise WebDriverException("Failed to load grade card page properly")
 
 # Update the main processing block
 if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or not enrollment):
@@ -688,206 +896,3 @@ def create_temp_file(suffix):
             if attempt == max_retries - 1:
                 raise
             time.sleep(0.1)
-
-# Streamlit setup
-st.set_page_config(
-    page_title="IGNOU Grade Card Automation",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
-# Custom CSS
-st.markdown("""
-    <style>
-    .main {
-        padding: 2rem;
-    }
-    .stButton>button {
-        width: 100%;
-        margin-top: 1rem;
-    }
-    .stDataFrame {
-        width: 100%;
-    }
-    .stMetric {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 1rem 0;
-    }
-    .stMetric [data-testid="stMetricValue"] {
-        color: #1E88E5;
-        font-size: 2rem;
-        font-weight: bold;
-    }
-    .stMetric [data-testid="stMetricLabel"] {
-        color: #262730;
-        font-size: 1.2rem;
-        font-weight: 500;
-    }
-    .stAlert {
-        padding: 1rem;
-        border-radius: 0.5rem;
-    }
-    .summary-box {
-        background-color: #f0f2f6;
-        padding: 1.5rem;
-        border-radius: 0.5rem;
-        margin: 1rem 0;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# Title with custom styling
-st.markdown("""
-    <h1 style='text-align: center; color: #1E88E5; margin-bottom: 2rem;'>
-        🎓 IGNOU Grade Card Calculator
-    </h1>
-""", unsafe_allow_html=True)
-
-# Create two columns for input fields
-col1, col2 = st.columns(2)
-
-with col1:
-    enrollment = st.text_input(
-        "Enrollment Number",
-        max_chars=10,
-        placeholder="Enter 9 or 10-digit enrollment number",
-        help="Enter your 9 or 10-digit IGNOU enrollment number"
-    )
-    gradecard_for = st.selectbox(
-        "Gradecard For",
-        [
-            ("1", "BCA/MCA/MP/PGDCA etc."),
-            ("2", "BDP/BA/B.COM/B.Sc./ASSO Programmes"),
-            ("3", "CBCS Programmes"),
-            ("4", "Other Programmes")
-        ],
-        format_func=lambda x: x[1],
-        index=0,
-        help="Select your program category"
-    )
-
-with col2:
-    valid_programs = [
-        "BCA", "BCAOL", "BCA_NEW", "BCA_NEWOL", "MBF", "MCA", "MCAOL",
-        "MCA_NEW", "MCA_NEWOL", "MP", "MPB", "PGDCA", "PGDCA_NEW",
-        "PGDHRM", "PGDFM", "PGDOM", "PGDMM", "PGDFMP"
-    ]
-    program_code = st.selectbox(
-        "Programme Code",
-        valid_programs,
-        index=valid_programs.index("MCAOL"),
-        help="Select your program code"
-    )
-
-# Function to find Chromium binary
-def find_chromium_binary():
-    possible_paths = [
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/lib/chromium-browser/chromium",
-        "/usr/lib/chromium/chromium"
-    ]
-    for path in possible_paths:
-        if os.path.exists(path):
-            logging.info("Found Chromium binary at: %s", path)
-            return path
-    logging.error("No Chromium binary found in paths: %s", possible_paths)
-    return None
-
-# Function to log enrollment number
-def log_enrollment(enrollment_number):
-    logging.info(f"Processing enrollment number: {enrollment_number}")
-
-# Extract student details from the page
-def extract_student_details(soup):
-    try:
-        # Find the student details table
-        details_table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
-        if details_table:
-            # Get the first row which contains student details
-            first_row = details_table.find("tr")
-            if first_row:
-                cells = first_row.find_all("td")
-                if len(cells) >= 3:
-                    return {
-                        "enrollment": cells[0].text.strip(),
-                        "name": cells[1].text.strip(),
-                        "program": cells[2].text.strip()
-                    }
-    except Exception as e:
-        logging.error(f"Error extracting student details: {str(e)}")
-    return None
-
-# Add new helper functions for robust element interaction
-def wait_for_page_load(driver, timeout=30):
-    """Wait for the page to be fully loaded and interactive"""
-    try:
-        # Wait for document ready state
-        WebDriverWait(driver, timeout).until(
-            lambda d: d.execute_script('return document.readyState') == 'complete'
-        )
-        # Additional wait for jQuery if present
-        try:
-            WebDriverWait(driver, 5).until(
-                lambda d: d.execute_script('return jQuery.active == 0')
-            )
-        except:
-            pass  # jQuery not present, continue
-        # Small delay to ensure dynamic content is loaded
-        time.sleep(1)
-    except TimeoutException:
-        logging.warning("Page load timeout - continuing anyway")
-
-def wait_and_find_element(driver, by, value, timeout=10, clickable=False):
-    """Wait for an element to be present and optionally clickable"""
-    try:
-        # First check if element exists in DOM
-        element = WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((by, value))
-        )
-        # Then check if it's visible
-        WebDriverWait(driver, timeout).until(
-            EC.visibility_of_element_located((by, value))
-        )
-        # Finally check if it's clickable if requested
-        if clickable:
-            WebDriverWait(driver, timeout).until(
-                EC.element_to_be_clickable((by, value))
-            )
-        return element
-    except TimeoutException:
-        logging.error(f"Element not found or not ready: {by}={value}")
-        return None
-
-def safe_click(driver, element):
-    """Safely click an element using JavaScript if regular click fails"""
-    try:
-        element.click()
-    except ElementNotInteractableException:
-        driver.execute_script("arguments[0].click();", element)
-
-def ensure_page_loaded(driver):
-    """Ensure the page is properly loaded before proceeding"""
-    try:
-        # Check if we're on the correct page
-        if "gradecard.ignou.ac.in" not in driver.current_url:
-            driver.get("https://gradecard.ignou.ac.in/gradecard/")
-            wait_for_page_load(driver)
-        
-        # Wait for any loading indicators to disappear
-        try:
-            WebDriverWait(driver, 5).until_not(
-                EC.presence_of_element_located((By.CLASS_NAME, "loading"))
-            )
-        except:
-            pass  # No loading indicator found, continue
-        
-        # Verify page title or some key element
-        if not driver.find_elements(By.ID, "ddlGradecardfor"):
-            raise WebDriverException("Grade card page not properly loaded")
-            
-    except Exception as e:
-        logging.error(f"Page load verification failed: {str(e)}")
-        raise WebDriverException("Failed to load grade card page properly")

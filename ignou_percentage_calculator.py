@@ -65,8 +65,6 @@ if "last_request_time" not in st.session_state:
     st.session_state.last_request_time = None
 if "retry_count" not in st.session_state:
     st.session_state.retry_count = 0
-if "enrollment_history" not in st.session_state:
-    st.session_state.enrollment_history = []
 
 # Resource management
 class ResourceManager:
@@ -273,9 +271,6 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
         st.error("⚠️ Too many requests. Please wait a minute before trying again.")
         st.stop()
     
-    # Log the enrollment number
-    log_enrollment(enrollment)
-    
     st.session_state.processing = True
     driver = None
     max_retries = 2
@@ -289,7 +284,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                 st.session_state.processing = False
                 st.stop()
 
-            logging.info(f"Starting grade card fetch for enrollment: {enrollment} (Attempt {retry_count + 1}/{max_retries + 1})")
+            logging.info(f"Session {st.session_state.session_id} - Starting grade card fetch for enrollment: {enrollment} (Attempt {retry_count + 1}/{max_retries + 1})")
 
             # Setup Selenium
             chrome_options = Options()

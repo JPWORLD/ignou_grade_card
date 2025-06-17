@@ -267,29 +267,44 @@ def extract_student_details(soup):
     return None
 
 # Add new helper functions for robust element interaction
-def wait_for_page_load(driver, timeout=60):
-    """Wait for the page to be fully loaded"""
+def wait_for_page_load(driver, timeout=30):
+    """Wait for the page to be fully loaded and interactive"""
     try:
+        # Wait for document ready state
         WebDriverWait(driver, timeout).until(
             lambda d: d.execute_script('return document.readyState') == 'complete'
         )
+        # Additional wait for jQuery if present
+        try:
+            WebDriverWait(driver, 5).until(
+                lambda d: d.execute_script('return jQuery.active == 0')
+            )
+        except:
+            pass  # jQuery not present, continue
+        # Small delay to ensure dynamic content is loaded
+        time.sleep(1)
     except TimeoutException:
         logging.warning("Page load timeout - continuing anyway")
 
-def wait_and_find_element(driver, by, value, timeout=60, clickable=False):
+def wait_and_find_element(driver, by, value, timeout=10, clickable=False):
     """Wait for an element to be present and optionally clickable"""
     try:
+        # First check if element exists in DOM
+        element = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((by, value))
+        )
+        # Then check if it's visible
+        WebDriverWait(driver, timeout).until(
+            EC.visibility_of_element_located((by, value))
+        )
+        # Finally check if it's clickable if requested
         if clickable:
-            element = WebDriverWait(driver, timeout).until(
+            WebDriverWait(driver, timeout).until(
                 EC.element_to_be_clickable((by, value))
-            )
-        else:
-            element = WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((by, value))
             )
         return element
     except TimeoutException:
-        logging.error(f"Element not found: {by}={value}")
+        logging.error(f"Element not found or not ready: {by}={value}")
         return None
 
 def safe_click(driver, element):
@@ -299,6 +314,30 @@ def safe_click(driver, element):
     except ElementNotInteractableException:
         driver.execute_script("arguments[0].click();", element)
 
+def ensure_page_loaded(driver):
+    """Ensure the page is properly loaded before proceeding"""
+    try:
+        # Check if we're on the correct page
+        if "gradecard.ignou.ac.in" not in driver.current_url:
+            driver.get("https://gradecard.ignou.ac.in/gradecard/")
+            wait_for_page_load(driver)
+        
+        # Wait for any loading indicators to disappear
+        try:
+            WebDriverWait(driver, 5).until_not(
+                EC.presence_of_element_located((By.CLASS_NAME, "loading"))
+            )
+        except:
+            pass  # No loading indicator found, continue
+        
+        # Verify page title or some key element
+        if not driver.find_elements(By.ID, "ddlGradecardfor"):
+            raise WebDriverException("Grade card page not properly loaded")
+            
+    except Exception as e:
+        logging.error(f"Page load verification failed: {str(e)}")
+        raise WebDriverException("Failed to load grade card page properly")
+
 if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or not enrollment):
     if not check_rate_limit():
         st.error("⚠️ Too many requests. Please wait a minute before trying again.")
@@ -306,7 +345,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
     
     st.session_state.processing = True
     driver = None
-    max_retries = 2  # Reduced retries for faster failure
+    max_retries = 2
     retry_count = 0
 
     while retry_count <= max_retries:
@@ -321,17 +360,15 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
 
             # Setup Selenium with optimized options
             chrome_options = Options()
-            chrome_options.add_argument("--headless=new")  # Use new headless mode
+            chrome_options.add_argument("--headless=new")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
-            # Reduced options for better performance
             chrome_options.add_argument("--disable-extensions")
             chrome_options.add_argument("--disable-notifications")
             chrome_options.add_argument("--disable-popup-blocking")
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            # Add user agent
             chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
             # Find Chromium binary
@@ -360,43 +397,55 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             chromedriver_version = driver.capabilities['chrome']['chromedriverVersion'].split(' ')[0]
             logging.info(f"Session {st.session_state.session_id} - Using Chromium version: {chrome_version}, ChromeDriver version: {chromedriver_version}")
 
-            # Optimized navigation and form interaction
-            driver.get("https://gradecard.ignou.ac.in/gradecard/")
-            wait_for_page_load(driver, timeout=30)  # Reduced timeout
-
-            # Wait for form elements with shorter timeout
-            gradecard_select = wait_and_find_element(driver, By.ID, "ddlGradecardfor", timeout=10)
+            # Ensure page is properly loaded
+            ensure_page_loaded(driver)
+            
+            # Wait for form elements with better error handling
+            gradecard_select = wait_and_find_element(driver, By.ID, "ddlGradecardfor", timeout=15)
             if not gradecard_select:
-                raise WebDriverException("Grade card type dropdown not found")
+                raise WebDriverException("Grade card type dropdown not found or not ready")
             Select(gradecard_select).select_by_value(gradecard_for[0])
 
-            # Add small delay between interactions
-            time.sleep(0.5)
+            time.sleep(1)  # Increased delay for dropdown to update
 
-            program_select = wait_and_find_element(driver, By.ID, "ddlProgram", timeout=10)
+            program_select = wait_and_find_element(driver, By.ID, "ddlProgram", timeout=15)
             if not program_select:
-                raise WebDriverException("Program dropdown not found")
+                raise WebDriverException("Program dropdown not found or not ready")
             Select(program_select).select_by_value(program_code)
 
-            time.sleep(0.5)
+            time.sleep(1)  # Increased delay for dropdown to update
 
-            enrollment_input = wait_and_find_element(driver, By.ID, "txtEnrno", timeout=10)
+            enrollment_input = wait_and_find_element(driver, By.ID, "txtEnrno", timeout=15)
             if not enrollment_input:
-                raise WebDriverException("Enrollment number input not found")
+                raise WebDriverException("Enrollment number input not found or not ready")
             enrollment_input.clear()
             enrollment_input.send_keys(enrollment)
 
-            time.sleep(0.5)
+            time.sleep(1)  # Increased delay before clicking
 
             # Optimized login button click
-            login_button = wait_and_find_element(driver, By.ID, "btnlogin", timeout=10, clickable=True)
+            login_button = wait_and_find_element(driver, By.ID, "btnlogin", timeout=15, clickable=True)
             if not login_button:
-                raise WebDriverException("Login button not found")
+                raise WebDriverException("Login button not found or not ready")
             
-            # Single click attempt with JavaScript
-            driver.execute_script("arguments[0].click();", login_button)
+            # Try multiple click methods
+            try:
+                login_button.click()
+            except:
+                try:
+                    driver.execute_script("arguments[0].click();", login_button)
+                except:
+                    # Last resort: try JavaScript event
+                    driver.execute_script("""
+                        var evt = new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window
+                        });
+                        arguments[0].dispatchEvent(evt);
+                    """, login_button)
 
-            # Wait for results with shorter timeout
+            # Wait for results with better error handling
             try:
                 WebDriverWait(driver, 30).until(
                     EC.any_of(
@@ -777,7 +826,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                     logging.error(f"Session {st.session_state.session_id} - Failed to check chromium version: {str(debug_e)}")
                 st.session_state.processing = False
             else:
-                st.warning(f"⚠️ Attempt {retry_count} failed. Retrying in 3 seconds...")  # Reduced retry delay
+                st.warning(f"⚠️ Attempt {retry_count} failed. Retrying in 3 seconds...")
                 time.sleep(3)
         except Exception as e:
             logging.error(f"Session {st.session_state.session_id} - Error: {str(e)}")

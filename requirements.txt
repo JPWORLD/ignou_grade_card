@@ -1,5 +1,7 @@
-streamlit
-requests
-beautifulsoup4
-pandas
-fpdf
+streamlit==1.39.0 
+selenium==4.26.1 
+beautifulsoup4==4.12.3 
+pandas==2.2.3 
+fpdf2==2.7.9
+webdriver-manager==4.0.2 
+openpyxl==3.1.5

@@ -266,6 +266,39 @@ def extract_student_details(soup):
         logging.error(f"Error extracting student details: {str(e)}")
     return None
 
+# Add new helper functions for robust element interaction
+def wait_for_page_load(driver, timeout=60):
+    """Wait for the page to be fully loaded"""
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script('return document.readyState') == 'complete'
+        )
+    except TimeoutException:
+        logging.warning("Page load timeout - continuing anyway")
+
+def wait_and_find_element(driver, by, value, timeout=60, clickable=False):
+    """Wait for an element to be present and optionally clickable"""
+    try:
+        if clickable:
+            element = WebDriverWait(driver, timeout).until(
+                EC.element_to_be_clickable((by, value))
+            )
+        else:
+            element = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((by, value))
+            )
+        return element
+    except TimeoutException:
+        logging.error(f"Element not found: {by}={value}")
+        return None
+
+def safe_click(driver, element):
+    """Safely click an element using JavaScript if regular click fails"""
+    try:
+        element.click()
+    except ElementNotInteractableException:
+        driver.execute_script("arguments[0].click();", element)
+
 if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or not enrollment):
     if not check_rate_limit():
         st.error("⚠️ Too many requests. Please wait a minute before trying again.")
@@ -273,7 +306,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
     
     st.session_state.processing = True
     driver = None
-    max_retries = 2
+    max_retries = 3  # Increased retries
     retry_count = 0
 
     while retry_count <= max_retries:
@@ -286,14 +319,13 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
 
             logging.info(f"Session {st.session_state.session_id} - Starting grade card fetch for enrollment: {enrollment} (Attempt {retry_count + 1}/{max_retries + 1})")
 
-            # Setup Selenium
+            # Setup Selenium with additional options for stability
             chrome_options = Options()
             chrome_options.add_argument("--headless")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
-            # Performance optimizations
             chrome_options.add_argument("--disable-extensions")
             chrome_options.add_argument("--disable-notifications")
             chrome_options.add_argument("--disable-infobars")
@@ -307,6 +339,8 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             chrome_options.add_argument("--disable-features=TranslateUI")
             chrome_options.add_argument("--disable-features=Translate")
             chrome_options.add_argument("--disable-features=TranslateNewUX")
+            # Add user agent to appear more like a regular browser
+            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
             # Find Chromium binary
             binary_path = find_chromium_binary()
@@ -334,25 +368,67 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             chromedriver_version = driver.capabilities['chrome']['chromedriverVersion'].split(' ')[0]
             logging.info(f"Session {st.session_state.session_id} - Using Chromium version: {chrome_version}, ChromeDriver version: {chromedriver_version}")
 
-            # Navigate to IGNOU grade card page
-            driver.get("https://gradecard.ignou.ac.in/gradecard/")
+            # Navigate to IGNOU grade card page with retry mechanism
+            max_navigation_retries = 3
+            for nav_retry in range(max_navigation_retries):
+                try:
+                    driver.get("https://gradecard.ignou.ac.in/gradecard/")
+                    wait_for_page_load(driver)
+                    break
+                except Exception as nav_e:
+                    if nav_retry == max_navigation_retries - 1:
+                        raise
+                    logging.warning(f"Navigation attempt {nav_retry + 1} failed: {str(nav_e)}")
+                    time.sleep(2)
+
             logging.info(f"Session {st.session_state.session_id} - Navigated to IGNOU grade card page")
 
-            # Select grade card type and program
-            Select(wait.until(EC.presence_of_element_located((By.ID, "ddlGradecardfor")))).select_by_value(gradecard_for[0])
-            Select(wait.until(EC.presence_of_element_located((By.ID, "ddlProgram")))).select_by_value(program_code)
-            driver.find_element(By.ID, "txtEnrno").send_keys(enrollment)
+            # Wait for and interact with form elements with better error handling
+            gradecard_select = wait_and_find_element(driver, By.ID, "ddlGradecardfor")
+            if not gradecard_select:
+                raise WebDriverException("Grade card type dropdown not found")
+            Select(gradecard_select).select_by_value(gradecard_for[0])
 
-            # Click login button
-            btn = wait.until(EC.element_to_be_clickable((By.ID, "btnlogin")))
-            driver.execute_script("arguments[0].click();", btn)
+            program_select = wait_and_find_element(driver, By.ID, "ddlProgram")
+            if not program_select:
+                raise WebDriverException("Program dropdown not found")
+            Select(program_select).select_by_value(program_code)
+
+            enrollment_input = wait_and_find_element(driver, By.ID, "txtEnrno")
+            if not enrollment_input:
+                raise WebDriverException("Enrollment number input not found")
+            enrollment_input.clear()
+            enrollment_input.send_keys(enrollment)
+
+            # Click login button with retry mechanism
+            login_button = wait_and_find_element(driver, By.ID, "btnlogin", clickable=True)
+            if not login_button:
+                raise WebDriverException("Login button not found")
+            
+            max_click_retries = 3
+            for click_retry in range(max_click_retries):
+                try:
+                    safe_click(driver, login_button)
+                    break
+                except Exception as click_e:
+                    if click_retry == max_click_retries - 1:
+                        raise
+                    logging.warning(f"Click attempt {click_retry + 1} failed: {str(click_e)}")
+                    time.sleep(1)
+
             logging.info(f"Session {st.session_state.session_id} - Submitted form")
 
-            # Wait for results table or error message
-            wait.until(EC.any_of(
-                EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_gvDetail")),
-                EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_lblMsg"))
-            ))
+            # Wait for results with better error handling
+            try:
+                WebDriverWait(driver, 60).until(
+                    EC.any_of(
+                        EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_gvDetail")),
+                        EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_lblMsg"))
+                    )
+                )
+            except TimeoutException:
+                raise WebDriverException("Timeout waiting for results or error message")
+
             soup = BeautifulSoup(driver.page_source, "html.parser")
             logging.info(f"Session {st.session_state.session_id} - Parsed page source")
 
@@ -462,6 +538,11 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             df_calc_display = pd.concat([df_calc, pd.DataFrame([totals])], ignore_index=True)
             df_calc_display.index = df_calc_display.index + 1  # Start serial number from 1
 
+            # Filter incomplete subjects
+            df_incomplete = df[df["STATUS"] != "COMPLETED"].copy()
+            # Remove the total row if it exists in incomplete subjects
+            df_incomplete = df_incomplete[df_incomplete["COURSE"] != "Total"]
+
             # Display results with improved layout
             st.success("✅ Grade Card Parsed and Calculated!")
             
@@ -560,7 +641,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                         pdf.ln()
                     
                     # Add incomplete subjects if any
-                    if not df_calc.empty:
+                    if not df_incomplete.empty:
                         pdf.ln(10)
                         pdf.set_font("helvetica", "B", 12)
                         pdf.cell(200, 10, "Incomplete Subjects", new_x="LMARGIN", new_y="NEXT")
@@ -576,7 +657,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                         pdf.ln()
                         
                         # Add data rows with serial numbers
-                        for idx, (_, row) in enumerate(df_calc.iterrows(), 1):
+                        for idx, (_, row) in enumerate(df_incomplete.iterrows(), 1):
                             pdf.cell(col_widths[0], 10, str(idx), 1)
                             pdf.cell(col_widths[1], 10, str(row["COURSE"]), 1)
                             pdf.cell(col_widths[2], 10, str(row["STATUS"]), 1)

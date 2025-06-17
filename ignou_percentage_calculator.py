@@ -38,18 +38,7 @@ def check_rate_limit():
 
 # Setup logging with session ID and rotation
 def setup_logging():
-    # Get client IP address
-    client_ip = st.experimental_get_query_params().get("client_ip", ["unknown"])[0]
-    if client_ip == "unknown":
-        try:
-            import socket
-            client_ip = socket.gethostbyname(socket.gethostname())
-        except:
-            client_ip = "unknown"
-    
-    # Create unique session ID using IP and timestamp
-    session_id = f"{client_ip}_{int(time.time())}_{str(uuid.uuid4())[:8]}"
-    
+    session_id = str(uuid.uuid4())[:8]
     log_dir = "logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
@@ -66,11 +55,10 @@ def setup_logging():
     
     log_file = os.path.join(log_dir, f"ignou_calculator_{session_id}.log")
     
-    # Create a custom formatter that includes session_id and IP
+    # Create a custom formatter that includes session_id
     class SessionFormatter(logging.Formatter):
         def format(self, record):
             record.session_id = session_id
-            record.client_ip = client_ip
             return super().format(record)
     
     # Create handlers
@@ -78,7 +66,7 @@ def setup_logging():
     console_handler = logging.StreamHandler()
     
     # Set formatter for both handlers
-    formatter = SessionFormatter('%(asctime)s - %(levelname)s - [%(client_ip)s] - [%(session_id)s] - %(message)s')
+    formatter = SessionFormatter('%(asctime)s - %(levelname)s - [%(session_id)s] - %(message)s')
     file_handler.setFormatter(formatter)
     console_handler.setFormatter(formatter)
     
@@ -101,8 +89,6 @@ if "last_request_time" not in st.session_state:
     st.session_state.last_request_time = None
 if "retry_count" not in st.session_state:
     st.session_state.retry_count = 0
-if "enrollment_history" not in st.session_state:
-    st.session_state.enrollment_history = []
 
 # Resource management
 class ResourceManager:
@@ -280,20 +266,10 @@ def find_chromium_binary():
     logging.error("No Chromium binary found in paths: %s", possible_paths)
     return None
 
-# Function to log enrollment number
-def log_enrollment(enrollment_number):
-    if enrollment_number not in st.session_state.enrollment_history:
-        st.session_state.enrollment_history.append(enrollment_number)
-        logging.info(f"New enrollment number processed: {enrollment_number}")
-        logging.info(f"Total unique enrollments in this session: {len(st.session_state.enrollment_history)}")
-
 if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or not enrollment):
     if not check_rate_limit():
         st.error("⚠️ Too many requests. Please wait a minute before trying again.")
         st.stop()
-    
-    # Log the enrollment number
-    log_enrollment(enrollment)
     
     st.session_state.processing = True
     driver = None
@@ -308,7 +284,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                 st.session_state.processing = False
                 st.stop()
 
-            logging.info(f"Starting grade card fetch for enrollment: {enrollment} (Attempt {retry_count + 1}/{max_retries + 1})")
+            logging.info(f"Session {st.session_state.session_id} - Starting grade card fetch for enrollment: {enrollment} (Attempt {retry_count + 1}/{max_retries + 1})")
 
             # Setup Selenium
             chrome_options = Options()

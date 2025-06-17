@@ -38,8 +38,8 @@ def check_rate_limit():
 
 # Setup logging with session ID and rotation
 def setup_logging():
-    # Get client IP address
-    client_ip = st.experimental_get_query_params().get("client_ip", ["unknown"])[0]
+    # Get client IP address using new query_params
+    client_ip = st.query_params.get("client_ip", "unknown")
     if client_ip == "unknown":
         try:
             import socket
@@ -306,7 +306,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
     
     st.session_state.processing = True
     driver = None
-    max_retries = 3  # Increased retries
+    max_retries = 2  # Reduced retries for faster failure
     retry_count = 0
 
     while retry_count <= max_retries:
@@ -319,27 +319,19 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
 
             logging.info(f"Session {st.session_state.session_id} - Starting grade card fetch for enrollment: {enrollment} (Attempt {retry_count + 1}/{max_retries + 1})")
 
-            # Setup Selenium with additional options for stability
+            # Setup Selenium with optimized options
             chrome_options = Options()
-            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--headless=new")  # Use new headless mode
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
+            # Reduced options for better performance
             chrome_options.add_argument("--disable-extensions")
             chrome_options.add_argument("--disable-notifications")
-            chrome_options.add_argument("--disable-infobars")
             chrome_options.add_argument("--disable-popup-blocking")
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-features=IsolateOrigins,site-per-process")
-            chrome_options.add_argument("--disable-site-isolation-trials")
-            chrome_options.add_argument("--disable-web-security")
-            chrome_options.add_argument("--disable-features=NetworkService")
-            chrome_options.add_argument("--disable-features=VizDisplayCompositor")
-            chrome_options.add_argument("--disable-features=TranslateUI")
-            chrome_options.add_argument("--disable-features=Translate")
-            chrome_options.add_argument("--disable-features=TranslateNewUX")
-            # Add user agent to appear more like a regular browser
+            # Add user agent
             chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
             # Find Chromium binary
@@ -368,59 +360,45 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             chromedriver_version = driver.capabilities['chrome']['chromedriverVersion'].split(' ')[0]
             logging.info(f"Session {st.session_state.session_id} - Using Chromium version: {chrome_version}, ChromeDriver version: {chromedriver_version}")
 
-            # Navigate to IGNOU grade card page with retry mechanism
-            max_navigation_retries = 3
-            for nav_retry in range(max_navigation_retries):
-                try:
-                    driver.get("https://gradecard.ignou.ac.in/gradecard/")
-                    wait_for_page_load(driver)
-                    break
-                except Exception as nav_e:
-                    if nav_retry == max_navigation_retries - 1:
-                        raise
-                    logging.warning(f"Navigation attempt {nav_retry + 1} failed: {str(nav_e)}")
-                    time.sleep(2)
+            # Optimized navigation and form interaction
+            driver.get("https://gradecard.ignou.ac.in/gradecard/")
+            wait_for_page_load(driver, timeout=30)  # Reduced timeout
 
-            logging.info(f"Session {st.session_state.session_id} - Navigated to IGNOU grade card page")
-
-            # Wait for and interact with form elements with better error handling
-            gradecard_select = wait_and_find_element(driver, By.ID, "ddlGradecardfor")
+            # Wait for form elements with shorter timeout
+            gradecard_select = wait_and_find_element(driver, By.ID, "ddlGradecardfor", timeout=10)
             if not gradecard_select:
                 raise WebDriverException("Grade card type dropdown not found")
             Select(gradecard_select).select_by_value(gradecard_for[0])
 
-            program_select = wait_and_find_element(driver, By.ID, "ddlProgram")
+            # Add small delay between interactions
+            time.sleep(0.5)
+
+            program_select = wait_and_find_element(driver, By.ID, "ddlProgram", timeout=10)
             if not program_select:
                 raise WebDriverException("Program dropdown not found")
             Select(program_select).select_by_value(program_code)
 
-            enrollment_input = wait_and_find_element(driver, By.ID, "txtEnrno")
+            time.sleep(0.5)
+
+            enrollment_input = wait_and_find_element(driver, By.ID, "txtEnrno", timeout=10)
             if not enrollment_input:
                 raise WebDriverException("Enrollment number input not found")
             enrollment_input.clear()
             enrollment_input.send_keys(enrollment)
 
-            # Click login button with retry mechanism
-            login_button = wait_and_find_element(driver, By.ID, "btnlogin", clickable=True)
+            time.sleep(0.5)
+
+            # Optimized login button click
+            login_button = wait_and_find_element(driver, By.ID, "btnlogin", timeout=10, clickable=True)
             if not login_button:
                 raise WebDriverException("Login button not found")
             
-            max_click_retries = 3
-            for click_retry in range(max_click_retries):
-                try:
-                    safe_click(driver, login_button)
-                    break
-                except Exception as click_e:
-                    if click_retry == max_click_retries - 1:
-                        raise
-                    logging.warning(f"Click attempt {click_retry + 1} failed: {str(click_e)}")
-                    time.sleep(1)
+            # Single click attempt with JavaScript
+            driver.execute_script("arguments[0].click();", login_button)
 
-            logging.info(f"Session {st.session_state.session_id} - Submitted form")
-
-            # Wait for results with better error handling
+            # Wait for results with shorter timeout
             try:
-                WebDriverWait(driver, 60).until(
+                WebDriverWait(driver, 30).until(
                     EC.any_of(
                         EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_gvDetail")),
                         EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_lblMsg"))
@@ -799,13 +777,13 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                     logging.error(f"Session {st.session_state.session_id} - Failed to check chromium version: {str(debug_e)}")
                 st.session_state.processing = False
             else:
-                st.warning(f"⚠️ Attempt {retry_count} failed. Retrying in 5 seconds...")
-                time.sleep(5)
+                st.warning(f"⚠️ Attempt {retry_count} failed. Retrying in 3 seconds...")  # Reduced retry delay
+                time.sleep(3)
         except Exception as e:
             logging.error(f"Session {st.session_state.session_id} - Error: {str(e)}")
             st.error("❌ An error occurred. Please try again later.")
             st.session_state.processing = False
-            break  # Exit the retry loop on other exceptions
+            break
         finally:
             if driver:
                 resource_manager.remove_driver(st.session_state.session_id)

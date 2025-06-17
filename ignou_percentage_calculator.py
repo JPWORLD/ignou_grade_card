@@ -106,7 +106,7 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
 
             logging.info("Initializing ChromeDriver")
             driver = webdriver.Chrome(service=service, options=chrome_options)
-            wait = WebDriverWait(driver, 30)
+            wait = WebDriverWait(driver, 60)  # Increased timeout to 60s
 
             # Log Chrome and ChromeDriver versions
             chrome_version = driver.capabilities['browserVersion']
@@ -127,25 +127,42 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             driver.execute_script("arguments[0].click();", btn)
             logging.info("Submitted form")
 
-            # Wait for results table
-            wait.until(EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_gvDetail")))
+            # Wait for results table or error message
+            wait.until(EC.any_of(
+                EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_gvDetail")),
+                EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolder1_lblMsg"))
+            ))
             soup = BeautifulSoup(driver.page_source, "html.parser")
             logging.info("Parsed page source")
 
-            # Check for error messages or CAPTCHAs
+            # Check for CAPTCHA
+            if soup.find("div", {"id": "captcha"}) or "captcha" in driver.page_source.lower():
+                st.error("❌ CAPTCHA detected. Please try again later or access the website manually to verify.")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp_file:
+                    tmp_file.write(driver.page_source.encode("utf-8"))
+                    logging.info("Page source saved to: %s", tmp_file.name)
+                    st.write(f"Page source saved to: {tmp_file.name}")
+                st.session_state.processing = False
+                st.stop()
+
+            # Check for error messages
             error_message = soup.find("span", {"id": "ctl00_ContentPlaceHolder1_lblMsg"})
             if error_message and error_message.text.strip():
                 st.error(f"❌ IGNOU website error: {error_message.text.strip()}")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp_file:
+                    tmp_file.write(driver.page_source.encode("utf-8"))
+                    logging.info("Page source saved to: %s", tmp_file.name)
+                    st.write(f"Page source saved to: {tmp_file.name}")
                 st.session_state.processing = False
                 st.stop()
 
             # Extract table
             table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
             if not table:
-                with open("page_source.html", "w", encoding="utf-8") as f:
-                    f.write(driver.page_source)
-                logging.error("Grade card table not found. Page source saved to page_source.html")
-                st.error("❌ Grade card table not found on the page. Page source saved to page_source.html for debugging.")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp_file:
+                    tmp_file.write(driver.page_source.encode("utf-8"))
+                    logging.error("Grade card table not found. Page source saved to: %s", tmp_file.name)
+                    st.error(f"❌ Grade card table not found. Check if enrollment ({enrollment}) and program ({program_code}) are valid. Page source saved to: {tmp_file.name}")
                 st.session_state.processing = False
                 st.stop()
 
@@ -275,7 +292,6 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             logging.error("Attempt %d failed due to WebDriver issue: %s", retry_count, str(e))
             if retry_count > max_retries:
                 st.error(f"⏳ Failed to initialize ChromeDriver after {max_retries + 1} attempts: {str(e)}. Please ensure chromium is installed correctly.")
-                # Debug: Check chromium installation
                 try:
                     result = subprocess.run(["chromium", "--version"], capture_output=True, text=True)
                     logging.info("Chromium version check: %s", result.stdout or result.stderr)
@@ -290,12 +306,20 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             logging.error("Attempt %d failed: %s", retry_count, str(e))
             if retry_count > max_retries:
                 st.error(f"⏳ Failed to interact with the IGNOU website after {max_retries + 1} attempts: {str(e)}")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp_file:
+                    tmp_file.write(driver.page_source.encode("utf-8"))
+                    logging.info("Page source saved to: %s", tmp_file.name)
+                    st.write(f"Page source saved to: {tmp_file.name}")
                 st.session_state.processing = False
             else:
                 st.warning(f"⚠️ Attempt {retry_count} failed. Retrying in 5 seconds...")
                 time.sleep(5)
         except Exception as e:
             st.error(f"❌ Failed: {str(e)}")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp_file:
+                tmp_file.write(driver.page_source.encode("utf-8"))
+                logging.info("Page source saved to: %s", tmp_file.name)
+                st.write(f"Page source saved to: {tmp_file.name}")
             st.session_state.processing = False
             break
         finally:

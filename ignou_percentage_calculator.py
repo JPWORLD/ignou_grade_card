@@ -21,20 +21,86 @@ from datetime import datetime, timedelta
 import threading
 from queue import Queue
 
-# Global rate limiting
-MAX_REQUESTS_PER_MINUTE = 10
-request_times = Queue(maxsize=MAX_REQUESTS_PER_MINUTE)
-rate_limit_lock = threading.Lock()
+# Enhanced resource management with better concurrency support
+class ResourceManager:
+    def __init__(self):
+        self.active_drivers = {}
+        self.lock = threading.Lock()
+        self.driver_semaphore = threading.Semaphore(5)  # Limit concurrent drivers
+        self.last_cleanup = time.time()
+        self.cleanup_interval = 300  # 5 minutes
+    
+    def add_driver(self, session_id, driver):
+        with self.lock:
+            # Cleanup old drivers periodically
+            current_time = time.time()
+            if current_time - self.last_cleanup > self.cleanup_interval:
+                self._cleanup_old_drivers()
+                self.last_cleanup = current_time
+            
+            # Acquire semaphore before adding new driver
+            self.driver_semaphore.acquire()
+            self.active_drivers[session_id] = {
+                'driver': driver,
+                'created_at': current_time,
+                'last_used': current_time
+            }
+    
+    def remove_driver(self, session_id):
+        with self.lock:
+            if session_id in self.active_drivers:
+                try:
+                    self.active_drivers[session_id]['driver'].quit()
+                except Exception as e:
+                    logging.error(f"Error closing driver for session {session_id}: {e}")
+                del self.active_drivers[session_id]
+                self.driver_semaphore.release()
+    
+    def _cleanup_old_drivers(self):
+        current_time = time.time()
+        expired_sessions = []
+        for session_id, driver_info in self.active_drivers.items():
+            # Cleanup drivers older than 10 minutes or inactive for 5 minutes
+            if (current_time - driver_info['created_at'] > 600 or 
+                current_time - driver_info['last_used'] > 300):
+                expired_sessions.append(session_id)
+        
+        for session_id in expired_sessions:
+            self.remove_driver(session_id)
+    
+    def update_last_used(self, session_id):
+        with self.lock:
+            if session_id in self.active_drivers:
+                self.active_drivers[session_id]['last_used'] = time.time()
+    
+    def cleanup_all(self):
+        with self.lock:
+            for session_id in list(self.active_drivers.keys()):
+                self.remove_driver(session_id)
 
-def check_rate_limit():
-    with rate_limit_lock:
-        current_time = datetime.now()
-        if request_times.full():
-            oldest_request = request_times.get()
-            if (current_time - oldest_request) < timedelta(minutes=1):
+# Enhanced rate limiting with better concurrency support
+class RateLimiter:
+    def __init__(self, max_requests=10, time_window=60):
+        self.max_requests = max_requests
+        self.time_window = time_window
+        self.requests = []
+        self.lock = threading.Lock()
+    
+    def check_rate_limit(self):
+        with self.lock:
+            current_time = time.time()
+            # Remove old requests
+            self.requests = [req_time for req_time in self.requests 
+                           if current_time - req_time < self.time_window]
+            
+            if len(self.requests) >= self.max_requests:
                 return False
-        request_times.put(current_time)
-        return True
+            
+            self.requests.append(current_time)
+            return True
+
+# Initialize rate limiter
+rate_limiter = RateLimiter(max_requests=10, time_window=60)
 
 # Setup logging with session ID and rotation
 def setup_logging():
@@ -66,280 +132,11 @@ if "last_request_time" not in st.session_state:
 if "retry_count" not in st.session_state:
     st.session_state.retry_count = 0
 
-# Resource management
-class ResourceManager:
-    def __init__(self):
-        self.active_drivers = {}
-        self.lock = threading.Lock()
-    
-    def add_driver(self, session_id, driver):
-        with self.lock:
-            self.active_drivers[session_id] = driver
-    
-    def remove_driver(self, session_id):
-        with self.lock:
-            if session_id in self.active_drivers:
-                try:
-                    self.active_drivers[session_id].quit()
-                except Exception as e:
-                    logging.error(f"Error closing driver for session {session_id}: {e}")
-                del self.active_drivers[session_id]
-    
-    def cleanup_all(self):
-        with self.lock:
-            for session_id, driver in self.active_drivers.items():
-                try:
-                    driver.quit()
-                except Exception as e:
-                    logging.error(f"Error closing driver for session {session_id}: {e}")
-            self.active_drivers.clear()
-
 resource_manager = ResourceManager()
 
-# Cleanup function for temporary files with better error handling
-def cleanup_temp_files():
-    for file_path in st.session_state.temp_files:
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logging.info(f"Cleaned up temporary file: {file_path}")
-        except Exception as e:
-            logging.error(f"Error cleaning up file {file_path}: {str(e)}")
-            # Try to remove file after a delay if it's locked
-            try:
-                time.sleep(1)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception as retry_e:
-                logging.error(f"Failed to remove file {file_path} after retry: {str(retry_e)}")
-
-# Register cleanup functions
-atexit.register(cleanup_temp_files)
-atexit.register(resource_manager.cleanup_all)
-
-# Function to create temporary file with session ID and better error handling
-def create_temp_file(suffix):
-    temp_dir = tempfile.gettempdir()
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            file_name = f"ignou_grade_{st.session_state.session_id}_{uuid.uuid4()}{suffix}"
-            file_path = os.path.join(temp_dir, file_name)
-            # Create empty file to ensure we have write permissions
-            with open(file_path, 'w') as f:
-                pass
-            st.session_state.temp_files.append(file_path)
-            return file_path
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise
-            time.sleep(0.1)
-
-# Streamlit setup
-st.set_page_config(
-    page_title="IGNOU Grade Card Automation",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
-# Custom CSS
-st.markdown("""
-    <style>
-    .main {
-        padding: 2rem;
-    }
-    .stButton>button {
-        width: 100%;
-        margin-top: 1rem;
-    }
-    .stDataFrame {
-        width: 100%;
-    }
-    .stMetric {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 1rem 0;
-    }
-    .stMetric [data-testid="stMetricValue"] {
-        color: #1E88E5;
-        font-size: 2rem;
-        font-weight: bold;
-    }
-    .stMetric [data-testid="stMetricLabel"] {
-        color: #262730;
-        font-size: 1.2rem;
-        font-weight: 500;
-    }
-    .stAlert {
-        padding: 1rem;
-        border-radius: 0.5rem;
-    }
-    .summary-box {
-        background-color: #f0f2f6;
-        padding: 1.5rem;
-        border-radius: 0.5rem;
-        margin: 1rem 0;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# Title with custom styling
-st.markdown("""
-    <h1 style='text-align: center; color: #1E88E5; margin-bottom: 2rem;'>
-        🎓 IGNOU Grade Card Calculator
-    </h1>
-""", unsafe_allow_html=True)
-
-# Create two columns for input fields
-col1, col2 = st.columns(2)
-
-with col1:
-    enrollment = st.text_input(
-        "Enrollment Number",
-        max_chars=10,
-        placeholder="Enter 9 or 10-digit enrollment number",
-        help="Enter your 9 or 10-digit IGNOU enrollment number"
-    )
-    gradecard_for = st.selectbox(
-        "Gradecard For",
-        [
-            ("1", "BCA/MCA/MP/PGDCA etc."),
-            ("2", "BDP/BA/B.COM/B.Sc./ASSO Programmes"),
-            ("3", "CBCS Programmes"),
-            ("4", "Other Programmes")
-        ],
-        format_func=lambda x: x[1],
-        index=0,
-        help="Select your program category"
-    )
-
-with col2:
-    valid_programs = [
-        "BCA", "BCAOL", "BCA_NEW", "BCA_NEWOL", "MBF", "MCA", "MCAOL",
-        "MCA_NEW", "MCA_NEWOL", "MP", "MPB", "PGDCA", "PGDCA_NEW",
-        "PGDHRM", "PGDFM", "PGDOM", "PGDMM", "PGDFMP"
-    ]
-    program_code = st.selectbox(
-        "Programme Code",
-        valid_programs,
-        index=valid_programs.index("MCAOL"),
-        help="Select your program code"
-    )
-
-# Function to find Chromium binary
-def find_chromium_binary():
-    possible_paths = [
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/lib/chromium-browser/chromium",
-        "/usr/lib/chromium/chromium"
-    ]
-    for path in possible_paths:
-        if os.path.exists(path):
-            logging.info("Found Chromium binary at: %s", path)
-            return path
-    logging.error("No Chromium binary found in paths: %s", possible_paths)
-    return None
-
-# Function to log enrollment number
-def log_enrollment(enrollment_number):
-    logging.info(f"Processing enrollment number: {enrollment_number}")
-
-# Extract student details from the page
-def extract_student_details(soup):
-    try:
-        # Find the student details table
-        details_table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
-        if details_table:
-            # Get the first row which contains student details
-            first_row = details_table.find("tr")
-            if first_row:
-                cells = first_row.find_all("td")
-                if len(cells) >= 3:
-                    return {
-                        "enrollment": cells[0].text.strip(),
-                        "name": cells[1].text.strip(),
-                        "program": cells[2].text.strip()
-                    }
-    except Exception as e:
-        logging.error(f"Error extracting student details: {str(e)}")
-    return None
-
-# Add new helper functions for robust element interaction
-def wait_for_page_load(driver, timeout=30):
-    """Wait for the page to be fully loaded and interactive"""
-    try:
-        # Wait for document ready state
-        WebDriverWait(driver, timeout).until(
-            lambda d: d.execute_script('return document.readyState') == 'complete'
-        )
-        # Additional wait for jQuery if present
-        try:
-            WebDriverWait(driver, 5).until(
-                lambda d: d.execute_script('return jQuery.active == 0')
-            )
-        except:
-            pass  # jQuery not present, continue
-        # Small delay to ensure dynamic content is loaded
-        time.sleep(1)
-    except TimeoutException:
-        logging.warning("Page load timeout - continuing anyway")
-
-def wait_and_find_element(driver, by, value, timeout=10, clickable=False):
-    """Wait for an element to be present and optionally clickable"""
-    try:
-        # First check if element exists in DOM
-        element = WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((by, value))
-        )
-        # Then check if it's visible
-        WebDriverWait(driver, timeout).until(
-            EC.visibility_of_element_located((by, value))
-        )
-        # Finally check if it's clickable if requested
-        if clickable:
-            WebDriverWait(driver, timeout).until(
-                EC.element_to_be_clickable((by, value))
-            )
-        return element
-    except TimeoutException:
-        logging.error(f"Element not found or not ready: {by}={value}")
-        return None
-
-def safe_click(driver, element):
-    """Safely click an element using JavaScript if regular click fails"""
-    try:
-        element.click()
-    except ElementNotInteractableException:
-        driver.execute_script("arguments[0].click();", element)
-
-def ensure_page_loaded(driver):
-    """Ensure the page is properly loaded before proceeding"""
-    try:
-        # Check if we're on the correct page
-        if "gradecard.ignou.ac.in" not in driver.current_url:
-            driver.get("https://gradecard.ignou.ac.in/gradecard/")
-            wait_for_page_load(driver)
-        
-        # Wait for any loading indicators to disappear
-        try:
-            WebDriverWait(driver, 5).until_not(
-                EC.presence_of_element_located((By.CLASS_NAME, "loading"))
-            )
-        except:
-            pass  # No loading indicator found, continue
-        
-        # Verify page title or some key element
-        if not driver.find_elements(By.ID, "ddlGradecardfor"):
-            raise WebDriverException("Grade card page not properly loaded")
-            
-    except Exception as e:
-        logging.error(f"Page load verification failed: {str(e)}")
-        raise WebDriverException("Failed to load grade card page properly")
-
+# Update the main processing block
 if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or not enrollment):
-    if not check_rate_limit():
+    if not rate_limiter.check_rate_limit():
         st.error("⚠️ Too many requests. Please wait a minute before trying again.")
         st.stop()
     
@@ -370,6 +167,11 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             chrome_options.add_argument("--disable-popup-blocking")
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            
+            # Add unique user data directory for each session
+            user_data_dir = f"/tmp/chrome_profile_{st.session_state.session_id}"
+            chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+            chrome_options.add_argument("--profile-directory=Default")
 
             # Find Chromium binary
             binary_path = find_chromium_binary()
@@ -397,8 +199,9 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
             chromedriver_version = driver.capabilities['chrome']['chromedriverVersion'].split(' ')[0]
             logging.info(f"Session {st.session_state.session_id} - Using Chromium version: {chrome_version}, ChromeDriver version: {chromedriver_version}")
 
-            # Ensure page is properly loaded
+            # Ensure page is properly loaded with session-specific handling
             ensure_page_loaded(driver)
+            resource_manager.update_last_used(st.session_state.session_id)
             
             # Wait for form elements with better error handling
             gradecard_select = wait_and_find_element(driver, By.ID, "ddlGradecardfor", timeout=15)
@@ -838,11 +641,253 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                 resource_manager.remove_driver(st.session_state.session_id)
             st.session_state.processing = False
 
-# Add session end handler with better cleanup
-def on_session_end():
-    cleanup_temp_files()
-    resource_manager.remove_driver(st.session_state.session_id)
-    logging.info(f"Session {st.session_state.session_id} ended")
+# Update cleanup function to handle user data directories
+def cleanup_temp_files():
+    for file_path in st.session_state.temp_files:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logging.info(f"Cleaned up temporary file: {file_path}")
+        except Exception as e:
+            logging.error(f"Error cleaning up file {file_path}: {str(e)}")
+            try:
+                time.sleep(1)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except Exception as retry_e:
+                logging.error(f"Failed to remove file {file_path} after retry: {str(retry_e)}")
+    
+    # Cleanup Chrome user data directories
+    try:
+        for item in os.listdir("/tmp"):
+            if item.startswith("chrome_profile_"):
+                profile_path = os.path.join("/tmp", item)
+                if os.path.isdir(profile_path):
+                    shutil.rmtree(profile_path, ignore_errors=True)
+    except Exception as e:
+        logging.error(f"Error cleaning up Chrome profiles: {str(e)}")
 
-# Register session end handler
-st.session_state['_on_session_end'] = on_session_end
+# Register cleanup functions
+atexit.register(cleanup_temp_files)
+atexit.register(resource_manager.cleanup_all)
+
+# Function to create temporary file with session ID and better error handling
+def create_temp_file(suffix):
+    temp_dir = tempfile.gettempdir()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            file_name = f"ignou_grade_{st.session_state.session_id}_{uuid.uuid4()}{suffix}"
+            file_path = os.path.join(temp_dir, file_name)
+            # Create empty file to ensure we have write permissions
+            with open(file_path, 'w') as f:
+                pass
+            st.session_state.temp_files.append(file_path)
+            return file_path
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(0.1)
+
+# Streamlit setup
+st.set_page_config(
+    page_title="IGNOU Grade Card Automation",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Custom CSS
+st.markdown("""
+    <style>
+    .main {
+        padding: 2rem;
+    }
+    .stButton>button {
+        width: 100%;
+        margin-top: 1rem;
+    }
+    .stDataFrame {
+        width: 100%;
+    }
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    .stMetric [data-testid="stMetricValue"] {
+        color: #1E88E5;
+        font-size: 2rem;
+        font-weight: bold;
+    }
+    .stMetric [data-testid="stMetricLabel"] {
+        color: #262730;
+        font-size: 1.2rem;
+        font-weight: 500;
+    }
+    .stAlert {
+        padding: 1rem;
+        border-radius: 0.5rem;
+    }
+    .summary-box {
+        background-color: #f0f2f6;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Title with custom styling
+st.markdown("""
+    <h1 style='text-align: center; color: #1E88E5; margin-bottom: 2rem;'>
+        🎓 IGNOU Grade Card Calculator
+    </h1>
+""", unsafe_allow_html=True)
+
+# Create two columns for input fields
+col1, col2 = st.columns(2)
+
+with col1:
+    enrollment = st.text_input(
+        "Enrollment Number",
+        max_chars=10,
+        placeholder="Enter 9 or 10-digit enrollment number",
+        help="Enter your 9 or 10-digit IGNOU enrollment number"
+    )
+    gradecard_for = st.selectbox(
+        "Gradecard For",
+        [
+            ("1", "BCA/MCA/MP/PGDCA etc."),
+            ("2", "BDP/BA/B.COM/B.Sc./ASSO Programmes"),
+            ("3", "CBCS Programmes"),
+            ("4", "Other Programmes")
+        ],
+        format_func=lambda x: x[1],
+        index=0,
+        help="Select your program category"
+    )
+
+with col2:
+    valid_programs = [
+        "BCA", "BCAOL", "BCA_NEW", "BCA_NEWOL", "MBF", "MCA", "MCAOL",
+        "MCA_NEW", "MCA_NEWOL", "MP", "MPB", "PGDCA", "PGDCA_NEW",
+        "PGDHRM", "PGDFM", "PGDOM", "PGDMM", "PGDFMP"
+    ]
+    program_code = st.selectbox(
+        "Programme Code",
+        valid_programs,
+        index=valid_programs.index("MCAOL"),
+        help="Select your program code"
+    )
+
+# Function to find Chromium binary
+def find_chromium_binary():
+    possible_paths = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/lib/chromium-browser/chromium",
+        "/usr/lib/chromium/chromium"
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            logging.info("Found Chromium binary at: %s", path)
+            return path
+    logging.error("No Chromium binary found in paths: %s", possible_paths)
+    return None
+
+# Function to log enrollment number
+def log_enrollment(enrollment_number):
+    logging.info(f"Processing enrollment number: {enrollment_number}")
+
+# Extract student details from the page
+def extract_student_details(soup):
+    try:
+        # Find the student details table
+        details_table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
+        if details_table:
+            # Get the first row which contains student details
+            first_row = details_table.find("tr")
+            if first_row:
+                cells = first_row.find_all("td")
+                if len(cells) >= 3:
+                    return {
+                        "enrollment": cells[0].text.strip(),
+                        "name": cells[1].text.strip(),
+                        "program": cells[2].text.strip()
+                    }
+    except Exception as e:
+        logging.error(f"Error extracting student details: {str(e)}")
+    return None
+
+# Add new helper functions for robust element interaction
+def wait_for_page_load(driver, timeout=30):
+    """Wait for the page to be fully loaded and interactive"""
+    try:
+        # Wait for document ready state
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script('return document.readyState') == 'complete'
+        )
+        # Additional wait for jQuery if present
+        try:
+            WebDriverWait(driver, 5).until(
+                lambda d: d.execute_script('return jQuery.active == 0')
+            )
+        except:
+            pass  # jQuery not present, continue
+        # Small delay to ensure dynamic content is loaded
+        time.sleep(1)
+    except TimeoutException:
+        logging.warning("Page load timeout - continuing anyway")
+
+def wait_and_find_element(driver, by, value, timeout=10, clickable=False):
+    """Wait for an element to be present and optionally clickable"""
+    try:
+        # First check if element exists in DOM
+        element = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((by, value))
+        )
+        # Then check if it's visible
+        WebDriverWait(driver, timeout).until(
+            EC.visibility_of_element_located((by, value))
+        )
+        # Finally check if it's clickable if requested
+        if clickable:
+            WebDriverWait(driver, timeout).until(
+                EC.element_to_be_clickable((by, value))
+            )
+        return element
+    except TimeoutException:
+        logging.error(f"Element not found or not ready: {by}={value}")
+        return None
+
+def safe_click(driver, element):
+    """Safely click an element using JavaScript if regular click fails"""
+    try:
+        element.click()
+    except ElementNotInteractableException:
+        driver.execute_script("arguments[0].click();", element)
+
+def ensure_page_loaded(driver):
+    """Ensure the page is properly loaded before proceeding"""
+    try:
+        # Check if we're on the correct page
+        if "gradecard.ignou.ac.in" not in driver.current_url:
+            driver.get("https://gradecard.ignou.ac.in/gradecard/")
+            wait_for_page_load(driver)
+        
+        # Wait for any loading indicators to disappear
+        try:
+            WebDriverWait(driver, 5).until_not(
+                EC.presence_of_element_located((By.CLASS_NAME, "loading"))
+            )
+        except:
+            pass  # No loading indicator found, continue
+        
+        # Verify page title or some key element
+        if not driver.find_elements(By.ID, "ddlGradecardfor"):
+            raise WebDriverException("Grade card page not properly loaded")
+            
+    except Exception as e:
+        logging.error(f"Page load verification failed: {str(e)}")
+        raise WebDriverException("Failed to load grade card page properly")

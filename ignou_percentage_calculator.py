@@ -21,6 +21,24 @@ from datetime import datetime, timedelta
 import threading
 from queue import Queue
 
+# Function to create temporary file with session ID and better error handling
+def create_temp_file(suffix):
+    temp_dir = tempfile.gettempdir()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            file_name = f"ignou_grade_{st.session_state.session_id}_{uuid.uuid4()}{suffix}"
+            file_path = os.path.join(temp_dir, file_name)
+            # Create empty file to ensure we have write permissions
+            with open(file_path, 'w') as f:
+                pass
+            st.session_state.temp_files.append(file_path)
+            return file_path
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(0.1)
+
 # Enhanced resource management with better concurrency support
 class ResourceManager:
     def __init__(self):
@@ -878,21 +896,3 @@ def cleanup_temp_files():
 # Register cleanup functions
 atexit.register(cleanup_temp_files)
 atexit.register(resource_manager.cleanup_all)
-
-# Function to create temporary file with session ID and better error handling
-def create_temp_file(suffix):
-    temp_dir = tempfile.gettempdir()
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            file_name = f"ignou_grade_{st.session_state.session_id}_{uuid.uuid4()}{suffix}"
-            file_path = os.path.join(temp_dir, file_name)
-            # Create empty file to ensure we have write permissions
-            with open(file_path, 'w') as f:
-                pass
-            st.session_state.temp_files.append(file_path)
-            return file_path
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise
-            time.sleep(0.1)

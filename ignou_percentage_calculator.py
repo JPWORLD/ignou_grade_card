@@ -50,44 +50,8 @@ def setup_logging():
     # Create unique session ID using IP and timestamp
     session_id = f"{client_ip}_{int(time.time())}_{str(uuid.uuid4())[:8]}"
     
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    
-    # Rotate logs older than 7 days
-    for old_log in os.listdir(log_dir):
-        if old_log.endswith('.log'):
-            log_path = os.path.join(log_dir, old_log)
-            if os.path.getmtime(log_path) < (time.time() - 7 * 24 * 60 * 60):
-                try:
-                    os.remove(log_path)
-                except Exception as e:
-                    print(f"Error removing old log {log_path}: {e}")
-    
-    log_file = os.path.join(log_dir, f"ignou_calculator_{session_id}.log")
-    
-    # Create a custom formatter that includes session_id and IP
-    class SessionFormatter(logging.Formatter):
-        def format(self, record):
-            record.session_id = session_id
-            record.client_ip = client_ip
-            return super().format(record)
-    
-    # Create handlers
-    file_handler = logging.FileHandler(log_file)
-    console_handler = logging.StreamHandler()
-    
-    # Set formatter for both handlers
-    formatter = SessionFormatter('%(asctime)s - %(levelname)s - [%(client_ip)s] - [%(session_id)s] - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # Setup root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-    
+    # Setup minimal logging
+    logging.basicConfig(level=logging.INFO)
     return session_id
 
 # Initialize session state with better defaults
@@ -282,10 +246,27 @@ def find_chromium_binary():
 
 # Function to log enrollment number
 def log_enrollment(enrollment_number):
-    if enrollment_number not in st.session_state.enrollment_history:
-        st.session_state.enrollment_history.append(enrollment_number)
-        logging.info(f"New enrollment number processed: {enrollment_number}")
-        logging.info(f"Total unique enrollments in this session: {len(st.session_state.enrollment_history)}")
+    logging.info(f"Processing enrollment number: {enrollment_number}")
+
+# Extract student details from the page
+def extract_student_details(soup):
+    try:
+        # Find the student details table
+        details_table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
+        if details_table:
+            # Get the first row which contains student details
+            first_row = details_table.find("tr")
+            if first_row:
+                cells = first_row.find_all("td")
+                if len(cells) >= 3:
+                    return {
+                        "enrollment": cells[0].text.strip(),
+                        "name": cells[1].text.strip(),
+                        "program": cells[2].text.strip()
+                    }
+    except Exception as e:
+        logging.error(f"Error extracting student details: {str(e)}")
+    return None
 
 if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or not enrollment):
     if not check_rate_limit():
@@ -401,15 +382,28 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                 st.session_state.processing = False
                 st.stop()
 
-            # Extract table
+            # Extract table and student details
             table = soup.find("table", {"id": "ctl00_ContentPlaceHolder1_gvDetail"})
             if not table:
-                with create_temp_file('.html') as tmp_file:
-                    tmp_file.write(driver.page_source.encode("utf-8"))
-                    logging.error(f"Session {st.session_state.session_id} - Grade card table not found. Page source saved to: {tmp_file}")
-                    st.error(f"❌ Grade card table not found. Check if enrollment ({enrollment}) and program ({program_code}) are valid. Page source saved to: {tmp_file}")
+                st.error("❌ Grade card table not found. Please check your enrollment number and program code.")
                 st.session_state.processing = False
                 st.stop()
+
+            # Extract student details
+            student_details = extract_student_details(soup)
+            
+            # Display student details in a nice box
+            if student_details:
+                st.markdown('<div class="summary-box">', unsafe_allow_html=True)
+                st.subheader("👤 Student Details")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.write(f"**Enrollment No:** {student_details['enrollment']}")
+                with col2:
+                    st.write(f"**Name:** {student_details['name']}")
+                with col3:
+                    st.write(f"**Programme Code:** {student_details['program']}")
+                st.markdown('</div>', unsafe_allow_html=True)
 
             headers = [th.text.strip() for th in table.find_all("th")]
             rows = []
@@ -523,6 +517,16 @@ if st.button("🚀 Fetch Grade Card", disabled=st.session_state.processing or no
                     pdf.cell(200, 10, "IGNOU Grade Report", new_x="LMARGIN", new_y="NEXT", align="C")
                     pdf.ln(10)
                     
+                    # Add student details section
+                    if student_details:
+                        pdf.set_font("helvetica", "B", 12)
+                        pdf.cell(200, 10, "Student Details", new_x="LMARGIN", new_y="NEXT")
+                        pdf.set_font("helvetica", size=12)
+                        pdf.cell(200, 10, f"Enrollment No: {student_details['enrollment']}", new_x="LMARGIN", new_y="NEXT")
+                        pdf.cell(200, 10, f"Name: {student_details['name']}", new_x="LMARGIN", new_y="NEXT")
+                        pdf.cell(200, 10, f"Programme Code: {student_details['program']}", new_x="LMARGIN", new_y="NEXT")
+                        pdf.ln(10)
+
                     # Add summary section
                     pdf.set_font("helvetica", "B", 12)
                     pdf.cell(200, 10, "Summary", new_x="LMARGIN", new_y="NEXT")
